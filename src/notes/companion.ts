@@ -46,6 +46,11 @@ function yamlList(values: string[]): string {
   return `[${values.map(yamlString).join(', ')}]`;
 }
 
+/** Unquoted so Obsidian types the property as a date; anything else is quoted to stay valid YAML. */
+function yamlDate(value: string): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : yamlString(value);
+}
+
 /** A value of the user's own: as typed when it is a plain word or phrase, quoted otherwise. */
 function yamlValue(value: string): string {
   return /^[\p{L}\p{N}][\p{L}\p{N} _./-]*$/u.test(value) && !/^(?:true|false|null|yes|no|on|off|~)$/i.test(value)
@@ -81,8 +86,7 @@ export function parseCompanionProperties(
 }
 
 export function renderCompanion(meta: CompanionMeta): string {
-  // Unquoted so Obsidian types the property as a date; anything else is quoted to stay valid YAML.
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(meta.date) ? meta.date : yamlString(meta.date);
+  const date = yamlDate(meta.date);
   // A line break in the title could put a marker alone on a line of its own.
   const title = meta.title
     .split(/[\r\n]+/)
@@ -272,8 +276,12 @@ function frontmatter(text: string): string | null {
    what renderCompanion writes and what Obsidian's property editor rewrites it to. */
 function scalar(block: string, key: string): string | null {
   const line = new RegExp(`^${key}:[ \\t]*(.*)$`, 'm').exec(block);
-  if (!line) return null;
-  const raw = line[1].trim();
+  return line ? scalarValue(line[1]) : null;
+}
+
+/** The string a one-line value reads as; null when it is empty or not a scalar. */
+function scalarValue(text: string): string | null {
+  const raw = text.trim();
   if (raw === '') return null;
 
   if (raw.startsWith('"')) {
@@ -306,4 +314,197 @@ export function readCompanionKeys(text: string): { date: string | null; source: 
   // The property may have been retyped as a date-time; the day is what identifies the meeting.
   const day = date === null ? null : /^(\d{4}-\d{2}-\d{2})[T ]/.exec(date);
   return { date: day ? day[1] : date, source: scalar(block, 'hamster_source') };
+}
+
+/** The line ending the text uses: that of its first line, `\n` when it has none. */
+function lineEnding(text: string): string {
+  const first = text.indexOf('\n');
+  return first > 0 && text.charCodeAt(first - 1) === 13 ? '\r\n' : '\n';
+}
+
+interface FrontmatterLine {
+  /** Offset of the line's first character. */
+  at: number;
+  /** The line without its `\r`. */
+  body: string;
+}
+
+/**
+ * The lines of the frontmatter block, nested ones included, and where its
+ * closing `---` starts. Null when there is no block: an opening `---` that
+ * never closes is a rule, not frontmatter.
+ */
+function frontmatterLines(text: string): { lines: FrontmatterLine[]; close: number } | null {
+  const lines: FrontmatterLine[] = [];
+  let at = text.charCodeAt(0) === BYTE_ORDER_MARK ? 1 : 0;
+  for (let n = 0; at <= text.length; n++) {
+    const newline = text.indexOf('\n', at);
+    const stop = newline < 0 ? text.length : newline;
+    const raw = text.slice(at, stop);
+    const body = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (n === 0) {
+      if (body.trimEnd() !== '---') return null;
+    } else if (body.trimEnd() === '---') {
+      return { lines, close: at };
+    } else {
+      lines.push({ at, body });
+    }
+    if (newline < 0) break;
+    at = newline + 1;
+  }
+  return null;
+}
+
+/** The index of the top-level line that holds `key`; -1 when there is none. */
+function keyLine(lines: FrontmatterLine[], key: string): number {
+  return lines.findIndex((line) => line.body.startsWith(`${key}:`));
+}
+
+function replaceLine(text: string, line: FrontmatterLine, body: string): string {
+  return text.slice(0, line.at) + body + text.slice(line.at + line.body.length);
+}
+
+/** `text` with `line` added to its frontmatter, just above the closing `---`. */
+function addFrontmatterLine(text: string, line: string, eol: string): string {
+  const block = frontmatterLines(text);
+  if (!block) return text;
+  return text.slice(0, block.close) + line + eol + text.slice(block.close);
+}
+
+/**
+ * `text` with the value of a top-level, one-line frontmatter key replaced.
+ * Returned unchanged when there is no frontmatter, no such key, or a value
+ * that spans several lines: nothing is added and nothing is reformatted.
+ */
+export function setFrontmatterValue(text: string, key: string, value: string): string {
+  const block = frontmatterLines(text);
+  if (!block) return text;
+  const { lines } = block;
+  const head = `${key}:`;
+  const i = keyLine(lines, key);
+  if (i < 0) return text;
+  const line = lines[i];
+  const current = line.body.slice(head.length).trim();
+  const continued = i + 1 < lines.length && /^[ \t]+\S/.test(lines[i + 1].body);
+  if (current === '' || /^[|>[{&*!]/.test(current) || continued) return text;
+  const next = `${head} ${value}`;
+  return line.body === next ? text : replaceLine(text, line, next);
+}
+
+/** Tags typed as one string, `a, b` or `#a #b`: each without its `#`, none empty. */
+export function splitTags(value: string): string[] {
+  return value
+    .split(/[,\s]+/)
+    .map((tag) => (tag.startsWith('#') ? tag.slice(1) : tag))
+    .filter((tag) => tag !== '');
+}
+
+const MEETING_TAGS = ['meeting', 'magical-hamster'];
+
+/** What a tag written in a list is called: without quotes and without a leading `#`. */
+function tagName(item: string): string {
+  const bare = /^(["']).*\1$/.test(item) ? item.slice(1, -1) : item;
+  return bare.startsWith('#') ? bare.slice(1) : bare;
+}
+
+function missingTags(present: string[]): string[] {
+  const names = new Set(present.map(tagName));
+  return MEETING_TAGS.filter((tag) => !names.has(tag));
+}
+
+/**
+ * The `tags` line, or lines, with `meeting` and `magical-hamster` among them.
+ * A flow list keeps its items and gets the missing ones; a block list gets
+ * them as items of its own, at the same indent; a string is read as tags
+ * separated by commas or spaces and written back as a flow list. Anything
+ * else (a map, a block scalar) is left alone.
+ */
+function withMeetingTags(text: string, eol: string): string {
+  const block = frontmatterLines(text);
+  if (!block) return text;
+  const { lines } = block;
+  const i = keyLine(lines, 'tags');
+  if (i < 0) return addFrontmatterLine(text, `tags: [${MEETING_TAGS.join(', ')}]`, eol);
+  const line = lines[i];
+  const raw = line.body.slice('tags:'.length).trim();
+
+  if (raw === '' || raw.startsWith('#')) {
+    const items: Array<{ line: FrontmatterLine; indent: string; name: string }> = [];
+    let j = i + 1;
+    for (; j < lines.length; j++) {
+      const item = /^([ \t]*)-(?:[ \t]+(.*))?$/.exec(lines[j].body);
+      if (!item) break;
+      items.push({ line: lines[j], indent: item[1], name: (item[2] ?? '').trim() });
+    }
+    if (items.length > 0) {
+      const missing = missingTags(items.map((item) => item.name));
+      if (missing.length === 0) return text;
+      const last = items[items.length - 1];
+      const end = last.line.at + last.line.body.length;
+      const added = missing.map((tag) => `${eol}${last.indent}- ${tag}`).join('');
+      return text.slice(0, end) + added + text.slice(end);
+    }
+    /* No value at all: it is replaced when what follows is plainly another key
+       or the closing line, and left alone when it could be a value of a kind
+       not read here (a map, a comment ahead of the list). A comment on the
+       line itself (`tags: #work` is one, to YAML) stays. */
+    const after = j < lines.length ? lines[j].body : '---';
+    if (!/^[^\s#-]/.test(after)) return text;
+    return replaceLine(text, line, `tags: [${MEETING_TAGS.join(', ')}]${raw === '' ? '' : ` ${raw}`}`);
+  }
+
+  if (raw.startsWith('[')) {
+    const close = raw.indexOf(']');
+    if (close < 0) return text;
+    const items = raw
+      .slice(1, close)
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item !== '');
+    const missing = missingTags(items);
+    if (missing.length === 0) return text;
+    return replaceLine(text, line, `tags: [${[...items, ...missing].join(', ')}]${raw.slice(close + 1)}`);
+  }
+
+  const value = scalarValue(raw);
+  if (value === null) return text;
+  const tags = splitTags(value);
+  return replaceLine(text, line, `tags: [${[...tags.map(yamlValue), ...missingTags(tags)].join(', ')}]`);
+}
+
+/**
+ * `text` with the properties of a meeting note: `type: meeting` when it has no
+ * type, `date` and `hamster_source` as `meta` says, and the plugin's two tags
+ * among its tags. Everything is done on the lines of the text: a present key
+ * is changed on its own line, an absent one is added above the closing `---`,
+ * and a note without frontmatter gets a block of these four; nothing else in
+ * the block is reformatted. `date` is kept when it already names the day, as
+ * a date or a date-time, and replaced otherwise: with `hamster_source` it is
+ * how the next visit finds the note again, and a note the session cannot find
+ * is worse than a changed property. Calling it again changes nothing.
+ */
+export function meetingFrontmatter(text: string, meta: { date: string; source: string }): string {
+  const eol = lineEnding(text);
+  const source = yamlString(meta.source);
+  if (!frontmatterLines(text)) {
+    const block = [
+      '---',
+      'type: meeting',
+      `date: ${yamlDate(meta.date)}`,
+      `tags: [${MEETING_TAGS.join(', ')}]`,
+      `hamster_source: ${source}`,
+      '---',
+    ];
+    const bom = text.charCodeAt(0) === BYTE_ORDER_MARK ? 1 : 0;
+    return text.slice(0, bom) + block.join(eol) + eol + text.slice(bom);
+  }
+  let out = text;
+  const has = (key: string): boolean => keyLine(frontmatterLines(out)?.lines ?? [], key) >= 0;
+  if (!has('type')) out = addFrontmatterLine(out, 'type: meeting', eol);
+  if (!has('date')) out = addFrontmatterLine(out, `date: ${yamlDate(meta.date)}`, eol);
+  else if (readCompanionKeys(out).date !== meta.date) out = setFrontmatterValue(out, 'date', yamlDate(meta.date));
+  out = withMeetingTags(out, eol);
+  return has('hamster_source')
+    ? setFrontmatterValue(out, 'hamster_source', source)
+    : addFrontmatterLine(out, `hamster_source: ${source}`, eol);
 }

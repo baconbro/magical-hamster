@@ -1,7 +1,10 @@
 import { normalizePath } from 'obsidian';
 import type { App, TFile } from 'obsidian';
 import type { HamsterSettings, SectionKey } from '../types.ts';
+import { setFrontmatterValue } from './companion.ts';
 import type { TextTarget } from './textTarget.ts';
+
+export { setFrontmatterValue } from './companion.ts';
 
 export interface CompanionKey {
   /** YYYY-MM-DD */
@@ -14,7 +17,6 @@ const TOUCH_RETRY_MS = 3000;
 /* The index follows vault and metadata events. Should one be missed, a wrong
    answer lasts this long at most. */
 const INDEX_MAX_AGE_MS = 30_000;
-const BYTE_ORDER_MARK = 0xfeff;
 
 /** The calendar day of a frontmatter value, which YAML may hand over as a string, a number or a Date. */
 export function dayOf(value: unknown): string | null {
@@ -34,49 +36,6 @@ export function companionKeyOf(frontmatter: unknown): CompanionKey | null {
   const day = dayOf(date);
   if (day === null || typeof source !== 'string' || source === '') return null;
   return { date: day, source };
-}
-
-/**
- * `text` with the value of a top-level, one-line frontmatter key replaced.
- * Returned unchanged when there is no frontmatter, no such key, or a value
- * that spans several lines: nothing is added and nothing is reformatted.
- */
-export function setFrontmatterValue(text: string, key: string, value: string): string {
-  const start = text.charCodeAt(0) === BYTE_ORDER_MARK ? 1 : 0;
-  const lines: Array<{ at: number; body: string }> = [];
-  let at = start;
-  let closed = false;
-  for (let n = 0; at <= text.length; n++) {
-    const newline = text.indexOf('\n', at);
-    const stop = newline < 0 ? text.length : newline;
-    const raw = text.slice(at, stop);
-    const body = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
-    if (n === 0) {
-      if (body.trimEnd() !== '---') return text;
-    } else if (body.trimEnd() === '---') {
-      closed = true;
-      break;
-    } else {
-      lines.push({ at, body });
-    }
-    if (newline < 0) break;
-    at = newline + 1;
-  }
-  // An opening `---` that never closes is a rule, not frontmatter.
-  if (!closed) return text;
-
-  const head = `${key}:`;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.body.startsWith(head)) continue;
-    const current = line.body.slice(head.length).trim();
-    const continued = i + 1 < lines.length && /^[ \t]+\S/.test(lines[i + 1].body);
-    if (current === '' || /^[|>[{&*!]/.test(current) || continued) return text;
-    const next = `${head} ${value}`;
-    if (line.body === next) return text;
-    return text.slice(0, line.at) + next + text.slice(line.at + line.body.length);
-  }
-  return text;
 }
 
 function indexId(date: string, source: SectionKey): string {

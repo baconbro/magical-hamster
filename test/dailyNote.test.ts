@@ -10,7 +10,7 @@ import { EditorView } from '@codemirror/view';
 import type { ViewUpdate } from '@codemirror/view';
 
 import { normalizeStats as normalize } from '../src/llm/tokens.ts';
-import { DEFAULT_LOCAL, DEFAULT_SETTINGS, softMarkerRegex, softMarkerUnsupported } from '../src/settings.ts';
+import { DEFAULT_LOCAL, DEFAULT_SETTINGS, EDIT_ORIGIN, softMarkerRegex, softMarkerUnsupported } from '../src/settings.ts';
 import type { DailyUpdate, HamsterSettings, Stats } from '../src/types.ts';
 
 /* Module I, the daily-note locator and the host adapters around it. Inside
@@ -142,7 +142,7 @@ const { createNotesHost, linkedNoteText, pickerFolders, stripLinkedMentions } = 
 );
 const { TextTarget } = await import('../src/notes/textTarget.ts');
 const { CompanionStore } = await import('../src/notes/companionStore.ts');
-const { renderCompanion } = await import('../src/notes/companion.ts');
+const { regionSkeleton, renderCompanion } = await import('../src/notes/companion.ts');
 const {
   HamsterSettingTab,
   checkPrefix,
@@ -1485,14 +1485,107 @@ describe('pickerFolders', () => {
 });
 
 describe('createNotesHost', () => {
-  function build(settings: Partial<HamsterSettings> = {}): { fake: FakeApp; host: ReturnType<typeof createNotesHost> } {
+  /** The target's clock, and when an editor last touched each note: what holds a Vault write back. */
+  interface HostClock {
+    time: number;
+    touches: Map<string, number>;
+    sleeps: number[];
+    /** Runs at each pause of the target, after the clock moved. */
+    onSleep: (() => void) | null;
+  }
+
+  function build(
+    settings: Partial<HamsterSettings> = {},
+  ): { fake: FakeApp; host: ReturnType<typeof createNotesHost>; clock: HostClock } {
     const fake = new FakeApp();
     const current = { ...DEFAULT_SETTINGS, ...settings };
     const locator = new DailyNoteLocator(fake.app);
-    const target = new TextTarget(fake.app, { lastTouch: () => undefined, now: () => 0 });
+    const clock: HostClock = { time: 0, touches: new Map(), sleeps: [], onSleep: null };
+    const target = new TextTarget(fake.app, {
+      lastTouch: (path) => clock.touches.get(path),
+      now: () => clock.time,
+      sleep: async (ms) => {
+        clock.sleeps.push(ms);
+        clock.time += ms;
+        clock.onSleep?.();
+      },
+    });
     const companions = new CompanionStore(fake.app, () => current, target);
     const host = createNotesHost(fake.app, { settings: () => current, locator, target, companions });
-    return { fake, host };
+    return { fake, host, clock };
+  }
+
+  interface Pos {
+    line: number;
+    ch: number;
+  }
+
+  /** Obsidian's Editor over a string, as far as the host's writes use it. */
+  class FakeEditor {
+    text: string;
+    readonly replaceCalls: Array<{ text: string; from: Pos; to: Pos | undefined; origin: string | undefined }> = [];
+
+    constructor(text: string) {
+      this.text = text;
+    }
+
+    getValue(): string {
+      return this.text;
+    }
+
+    lineCount(): number {
+      return this.text.split('\n').length;
+    }
+
+    lastLine(): number {
+      return this.lineCount() - 1;
+    }
+
+    getLine(line: number): string {
+      return this.text.split('\n')[line] ?? '';
+    }
+
+    posToOffset(pos: Pos): number {
+      const lines = this.text.split('\n');
+      let at = 0;
+      for (let i = 0; i < pos.line; i++) at += lines[i].length + 1;
+      return at + pos.ch;
+    }
+
+    offsetToPos(offset: number): Pos {
+      const before = this.text.slice(0, offset);
+      return { line: before.split('\n').length - 1, ch: offset - (before.lastIndexOf('\n') + 1) };
+    }
+
+    replaceRange(text: string, from: Pos, to?: Pos, origin?: string): void {
+      this.replaceCalls.push({ text, from, to, origin });
+      const start = this.posToOffset(from);
+      const end = to ? this.posToOffset(to) : start;
+      this.text = this.text.slice(0, start) + text + this.text.slice(end);
+    }
+  }
+
+  /** Opens `path` in a pane, in source mode: the host's writes to it then go through this editor. */
+  function openInEditor(fake: FakeApp, path: string): FakeEditor {
+    const entry = fake.files.get(path);
+    assert.ok(entry, `${path} is not in the fake vault`);
+    const editor = new FakeEditor(entry.data);
+    const view = new obsidian.MarkdownView(entry.file, editor);
+    Object.assign(fake.workspace, {
+      getLeavesOfType: (type: string) => (type === 'markdown' ? [{ isDeferred: false, view }] : []),
+    });
+    return editor;
+  }
+
+  /** The clock's time at each `vault.process` call, the one Vault write the host makes to an existing note. */
+  function processTimes(fake: FakeApp, clock: HostClock): number[] {
+    const times: number[] = [];
+    const process = fake.vault.process;
+    fake.vault.process = async (file, fn) => {
+      times.push(clock.time);
+      return process(file, fn);
+    };
+    return times;
   }
 
   const REGISTRY = [
@@ -1677,6 +1770,90 @@ describe('createNotesHost', () => {
       fake.files.get(today.path)?.data,
       'Jane Example\nbudget ok\n\nlater thought\n↳ [[Mtg-x|Meeting notes]]\n',
     );
+  });
+
+  const MEETING = { date: '2026-10-09', source: 'Budget review#0' };
+  const MEETING_NOTE = '10 Work/Budget review.md';
+  const SKELETON = regionSkeleton().join('\n');
+  const PROPERTIES = '---\ntype: meeting\ndate: 2026-10-09\ntags: [meeting, magical-hamster]\nhamster_source: "Budget review#0"\n---\n';
+
+  it('prepares a note open in source mode through its editor, with nothing written to the vault', async () => {
+    const { fake, host, clock } = build();
+    const text = '# Budget\n\n- envelope 52k\n\n\n';
+    fake.add(MEETING_NOTE, text);
+    const editor = openInEditor(fake, MEETING_NOTE);
+    const processed = processTimes(fake, clock);
+
+    assert.equal(await host.prepareMeetingNote(MEETING_NOTE, MEETING), 'done');
+
+    assert.deepEqual(processed, []);
+    assert.equal(fake.files.get(MEETING_NOTE)?.data, text, 'the file waits for the editor\'s own save');
+    // The properties, then the sections after the last line that holds something: the blank lines stay below.
+    assert.equal(editor.getValue(), `${PROPERTIES}# Budget\n\n- envelope 52k\n${SKELETON}\n\n\n`);
+    assert.equal(editor.replaceCalls.length, 2);
+    assert.ok(editor.replaceCalls.every((call) => call.origin === EDIT_ORIGIN));
+    assert.deepEqual(editor.replaceCalls[0], {
+      text: PROPERTIES,
+      from: { line: 0, ch: 0 },
+      to: { line: 0, ch: 0 },
+      origin: EDIT_ORIGIN,
+    });
+  });
+
+  it('prepares a closed note through the Vault, each write once an editor\'s pending save is past', async () => {
+    const { fake, host, clock } = build();
+    fake.add(MEETING_NOTE, '---\ntype: note\ntags: [work]\n---\n# Budget\n\n- envelope 52k\n');
+    // Typed in half a second ago, in a pane since put in Reading view.
+    clock.touches.set(MEETING_NOTE, clock.time - 2000);
+    const processed = processTimes(fake, clock);
+
+    assert.equal(await host.prepareMeetingNote(MEETING_NOTE, MEETING), 'done');
+
+    assert.equal(processed.length, 2, 'the properties, then the sections');
+    assert.ok(processed.every((at) => at >= 500), 'both after the cooldown');
+    assert.equal(
+      fake.files.get(MEETING_NOTE)?.data,
+      `---\ntype: note\ntags: [work, meeting, magical-hamster]\ndate: 2026-10-09\nhamster_source: "Budget review#0"\n---\n# Budget\n\n- envelope 52k\n${SKELETON}\n`,
+    );
+  });
+
+  it('finishes a note whose properties were written before its sections, without writing them again', async () => {
+    const { fake, host, clock } = build();
+    fake.add(MEETING_NOTE, `${PROPERTIES}# Budget\n`);
+    const processed = processTimes(fake, clock);
+
+    assert.equal(await host.prepareMeetingNote(MEETING_NOTE, MEETING), 'done');
+
+    assert.equal(processed.length, 2, 'the properties are read and left as they are');
+    assert.equal(fake.files.get(MEETING_NOTE)?.data, `${PROPERTIES}# Budget\n${SKELETON}\n`);
+  });
+
+  it('answers exists for a note that holds the sections, missing for one that is not there', async () => {
+    const { fake, host, clock } = build();
+    const prepared = `${PROPERTIES}# Budget\n${SKELETON}\n`;
+    fake.add(MEETING_NOTE, prepared);
+    const editor = openInEditor(fake, MEETING_NOTE);
+    const processed = processTimes(fake, clock);
+
+    assert.equal(await host.prepareMeetingNote(MEETING_NOTE, MEETING), 'exists');
+    assert.equal(editor.getValue(), prepared);
+    assert.deepEqual(processed, []);
+    assert.equal(await host.prepareMeetingNote('10 Work/Gone.md', MEETING), 'missing');
+  });
+
+  it('answers busy, with nothing written, when the note is being typed in', async () => {
+    const { fake, host, clock } = build();
+    const text = '# Budget\n';
+    fake.add(MEETING_NOTE, text);
+    clock.touches.set(MEETING_NOTE, clock.time);
+    clock.onSleep = () => clock.touches.set(MEETING_NOTE, clock.time);
+    const processed = processTimes(fake, clock);
+
+    assert.equal(await host.prepareMeetingNote(MEETING_NOTE, MEETING), 'busy');
+
+    assert.deepEqual(processed, []);
+    assert.equal(fake.files.get(MEETING_NOTE)?.data, text);
+    assert.ok(clock.time >= 6000, 'after having waited for the note to settle');
   });
 
   it('remembers a companion it created by the keys in its frontmatter', async () => {

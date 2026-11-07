@@ -10,7 +10,7 @@ import { merge, mergeAll } from './companion.ts';
    overwrites whatever the Vault API wrote in between. The margin covers a
    save that starts late. */
 const DEFAULT_COOLDOWN_MS = 2500;
-/* How long insertLine waits for a note to settle before it gives up. */
+/* How long insertLine and edit wait for a note to settle before they give up. */
 const INSERT_WAIT_MS = 6000;
 const POLL_MS = 250;
 /* An editor opened on the note while a Vault write was being prepared: the
@@ -293,6 +293,41 @@ export class TextTarget {
   }
 
   /**
+   * Rewrites a note with `fn`, which receives the text current AT WRITE TIME
+   * and returns the new text, or null to leave the note alone. Through the
+   * editor when the note is open in source mode: one `replaceRange` over the
+   * span that differs, in the undo history like a line the user typed, and a
+   * cursor outside that span stays on its text. Through the Vault otherwise,
+   * once no editor's pending save could overwrite it. `busy` means nothing
+   * was written: the note stayed too close to an editor change.
+   */
+  async edit(
+    path: string,
+    fn: (text: string) => string | null,
+  ): Promise<'editor' | 'vault' | 'unchanged' | 'busy' | 'missing'> {
+    const deadline = this.now() + INSERT_WAIT_MS;
+    for (;;) {
+      const file = this.file(path);
+      if (!file) return 'missing';
+
+      const open = this.editorOf(file);
+      if (open) {
+        if (!editInEditor(open.editor, fn)) return 'unchanged';
+        this.unsaved.add(file);
+        return 'editor';
+      }
+
+      const wait = this.cooldown(file.path);
+      if (wait <= 0) {
+        const result = await this.editInFile(file, fn);
+        if (result !== 'busy') return result;
+      }
+      if (this.now() >= deadline) return 'busy';
+      await this.sleep(Math.min(Math.max(wait, 50), POLL_MS));
+    }
+  }
+
+  /**
    * Rewrites a note through the Vault, with the text current at write time.
    * `busy` when an editor owns the note or changed it too recently.
    */
@@ -408,6 +443,34 @@ export class TextTarget {
     }
     return result;
   }
+
+  private async editInFile(
+    file: TFile,
+    fn: (text: string) => string | null,
+  ): Promise<'vault' | 'unchanged' | 'busy' | 'missing'> {
+    let result: 'vault' | 'unchanged' | 'busy' = 'unchanged';
+    // Obsidian reads the path the file has now; a rename meanwhile changes `file.path` under us.
+    const path = file.path;
+    try {
+      await this.app.vault.process(file, (data) => {
+        if (this.holdFor(file) > 0) {
+          result = 'busy';
+          return data;
+        }
+        const next = fn(data);
+        if (next === null || next === data) {
+          result = 'unchanged';
+          return data;
+        }
+        result = 'vault';
+        return next;
+      });
+    } catch (error) {
+      if (!this.app.vault.getFileByPath(path)) return 'missing';
+      throw error;
+    }
+    return result;
+  }
 }
 
 /* An editor's text holds no carriage return: CodeMirror turns each one it is
@@ -503,4 +566,19 @@ function insertInEditor(
     EDIT_ORIGIN,
   );
   return 'editor';
+}
+
+/* `replaceRange` for the same reason: a change to the user's own note is one
+   the user may undo. The span is the smallest that makes the change, so the
+   cursor and the selection move only when they are inside it. True when the
+   editor was changed. */
+function editInEditor(editor: Editor, fn: (text: string) => string | null): boolean {
+  const text = editor.getValue();
+  const next = fn(text);
+  if (next === null) return false;
+  // The buffer holds no carriage return (see lineFeedsOnly): a result with some would never match it.
+  const span = diffSpan(text, next.replace(/\r\n?/g, '\n'));
+  if (!span) return false;
+  editor.replaceRange(span.insert, editor.offsetToPos(span.from), editor.offsetToPos(span.to), EDIT_ORIGIN);
+  return true;
 }

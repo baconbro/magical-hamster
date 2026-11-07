@@ -1819,7 +1819,7 @@ class MeetingSession implements HamsterSession {
       linkLine: '',
       intoNote: true,
       where:
-        'Below your text: four sections (Enhanced notes, AI summary, Q&A insights, Transcript). In the frontmatter: type, date, tags and hamster_source.',
+        "Below your text: four sections (Enhanced notes, AI summary, Q&A insights, Transcript). In the properties: type, tags and hamster_source are added, and date is set to the meeting's day.",
     });
     if (!accepted || this.state.meeting?.key !== meeting.key) return;
     this.deps.setLocal({ firstWriteConfirmed: true });

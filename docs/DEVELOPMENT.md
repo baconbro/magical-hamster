@@ -114,7 +114,7 @@ test/                   unit tests; the adapters run against a stub of `obsidian
 1. Nothing is written to the vault until the user clicks **Create companion note**.
 2. The plugin adds exactly one line to the daily note and never edits any other user text.
 3. Companion writes only touch the text between a region's markers, and the `updated` date in the frontmatter. A damaged marker pair means the write is skipped, never repaired.
-4. No Vault API write to a file within 2.5 s of an edit in an editor: Obsidian saves 2 s after the last change and the later write wins.
+4. No Vault API write to a file within 2.5 s of an edit in an editor: Obsidian saves 2 s after the last change and the later write wins. The one-file mode edits properties as text lines, never through `processFrontMatter`.
 5. No wikilinks and no `- [ ]` checkboxes in generated text by default: both are indexed by other tooling in the vault.
 6. Generated text is saved inert: no image, no HTML tag, no code block or inline query that another plugin would run. Links to http(s) and mailto addresses written by the model are kept: nothing fetches them until clicked. Links with any other scheme (`obsidian://`, `file:`) are reduced to their text.
 7. Models, the speech runtime, the index, stats and bench audio live outside the vault.
