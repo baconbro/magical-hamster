@@ -14,6 +14,49 @@ export interface VaultIndexDeps {
   saveEveryMs?: number;
   /** Extra exclusions, on top of the folder selection. */
   exclude?: (path: string) => boolean;
+  /** The id written into both files of one save: 16 hex characters. Default: random. */
+  saveId?: () => string;
+}
+
+/* The two files of a save are paired by an id they both carry: `saveId` in the head of
+   index.json, and the same eight bytes in a header in front of the vectors. They are written one
+   after the other, so a crash or a quit between the two renames, or a save under way when the
+   plugin was unloaded, leaves index.json of one save with vectors.bin of another. Their lengths
+   alone cannot tell: a renamed note moves its chunks to the end of the vector order without
+   changing their number, and such a pair would read every vector against the wrong chunk. */
+export const VECTORS_MAGIC = 'MHVX';
+export const VECTORS_HEADER_BYTES = 16;
+// The version of both files. 1 was 0.1.4's: no save id and no header; read as no index at all.
+const INDEX_FORMAT = 2;
+const SAVE_ID_HEX = /^[0-9a-f]{16}$/;
+
+function randomSaveId(): string {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(VECTORS_HEADER_BYTES / 2));
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/** Magic, format (uint32 little-endian), the save id's eight bytes, then the vectors. */
+function withHeader(saveId: string, vectors: Uint8Array): Uint8Array {
+  const out = new Uint8Array(VECTORS_HEADER_BYTES + vectors.byteLength);
+  for (let i = 0; i < 4; i++) out[i] = VECTORS_MAGIC.charCodeAt(i);
+  new DataView(out.buffer).setUint32(4, INDEX_FORMAT, true);
+  for (let i = 0; i < 8; i++) out[8 + i] = parseInt(saveId.slice(i * 2, i * 2 + 2), 16);
+  out.set(vectors, VECTORS_HEADER_BYTES);
+  return out;
+}
+
+/** The save id of the header, or throws for anything that is not a header of this format. */
+function headerIdOf(vectors: Uint8Array): string {
+  if (vectors.byteLength < VECTORS_HEADER_BYTES) throw new Error('Corrupt index: no vectors header');
+  for (let i = 0; i < 4; i++) {
+    if (vectors[i] !== VECTORS_MAGIC.charCodeAt(i)) throw new Error('Corrupt index: not a vectors file');
+  }
+  // A DataView reads at any offset: the bytes may come from a buffer that does not start on one.
+  const format = new DataView(vectors.buffer, vectors.byteOffset, VECTORS_HEADER_BYTES).getUint32(4, true);
+  if (format !== INDEX_FORMAT) throw new Error(`Corrupt index: vectors format ${format}`);
+  let id = '';
+  for (let i = 8; i < VECTORS_HEADER_BYTES; i++) id += vectors[i].toString(16).padStart(2, '0');
+  return id;
 }
 
 interface FileEntry {
@@ -300,7 +343,13 @@ export class VaultIndex {
   }
 
   status(): VaultIndexStatus {
-    return { ...this.state, folders: [...this.state.folders] };
+    const status: VaultIndexStatus = { ...this.state, folders: [...this.state.folders] };
+    // The settings name another model or dimension than the index in memory was built with: it
+    // answers nothing until the next build (see usable()), and the counts shown are its old ones.
+    if (this.store !== null && (this.model !== this.deps.modelId() || this.store.dim !== this.deps.embedder.dim)) {
+      status.modelPending = true;
+    }
+    return status;
   }
 
   /** Stops a running build, then saves if anything changed since the last save. */
@@ -375,12 +424,15 @@ export class VaultIndex {
   private restore(index: string, vectors: Uint8Array): void {
     const parsed = JSON.parse(index) as {
       v?: unknown;
+      saveId?: unknown;
       model?: unknown;
       folders?: unknown;
       files?: unknown;
       store?: unknown;
     } | null;
-    if (!parsed || parsed.v !== 1) throw new Error('Corrupt index: unknown format');
+    if (!parsed || parsed.v !== INDEX_FORMAT) throw new Error('Corrupt index: unknown format');
+    if (typeof parsed.saveId !== 'string' || !SAVE_ID_HEX.test(parsed.saveId)) throw new Error('Corrupt index: save id');
+    if (headerIdOf(vectors) !== parsed.saveId) throw new Error('Corrupt index: the vectors are those of another save');
     // Vectors from another model or dimension cannot be compared with new ones.
     if (parsed.model !== this.deps.modelId()) throw new Error('The index was built with another model');
     const { folders, files } = parsed;
@@ -389,7 +441,10 @@ export class VaultIndex {
     }
     if (typeof files !== 'object' || files === null) throw new Error('Corrupt index: files');
 
-    const store = VectorStore.deserialize<VaultChunk>(JSON.stringify(parsed.store), vectors);
+    const store = VectorStore.deserialize<VaultChunk>(
+      JSON.stringify(parsed.store),
+      vectors.subarray(VECTORS_HEADER_BYTES),
+    );
     if (store.dim !== this.deps.embedder.dim) throw new Error('The index has another dimension');
     const pathOf = new Map<string, unknown>();
     for (const { id, meta } of store.entries()) {
@@ -632,15 +687,18 @@ export class VaultIndex {
     try {
       const store = this.store ?? new VectorStore<VaultChunk>(this.deps.embedder.dim);
       const { index, vectors } = store.serialize();
+      const saveId = (this.deps.saveId ?? randomSaveId)();
+      if (!SAVE_ID_HEX.test(saveId)) throw new Error(`Invalid save id: ${saveId}`);
       const head = JSON.stringify({
-        v: 1,
+        v: INDEX_FORMAT,
+        saveId,
         model: this.model,
         folders: this.folders,
         files: Object.fromEntries(this.files),
       });
       // The store's JSON is spliced in as it is: with a few thousand chunks of
       // text it runs to megabytes, and re-encoding it would double every save.
-      await this.deps.io.save(`${head.slice(0, -1)},"store":${index}}`, vectors);
+      await this.deps.io.save(`${head.slice(0, -1)},"store":${index}}`, withHeader(saveId, vectors));
       this.lastSaveAt = this.deps.clock.now();
       this.overcome(ABOUT_SAVE);
     } catch (error) {

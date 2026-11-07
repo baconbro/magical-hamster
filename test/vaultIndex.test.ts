@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { normalize } from '../src/rag/embed.ts';
-import { VaultIndex } from '../src/rag/vaultIndex.ts';
+import { VECTORS_HEADER_BYTES, VECTORS_MAGIC, VaultIndex } from '../src/rag/vaultIndex.ts';
 import type { VaultIndexDeps } from '../src/rag/vaultIndex.ts';
 import { VectorStore } from '../src/rag/vectorStore.ts';
 import type { Clock, Embedder, VaultChunk, VaultIndexIO, VaultIndexStatus } from '../src/types.ts';
@@ -116,7 +116,8 @@ function memoryVault(initial: Record<string, string> = {}) {
         model: parsed.model,
         folders: parsed.folders,
         files: parsed.files,
-        store: VectorStore.deserialize<VaultChunk>(JSON.stringify(parsed.store), state.saved.vectors),
+        // The store's own bytes follow the header that pairs the file with index.json.
+        store: VectorStore.deserialize<VaultChunk>(JSON.stringify(parsed.store), state.saved.vectors.subarray(VECTORS_HEADER_BYTES)),
       };
     },
   };
@@ -605,6 +606,30 @@ test('a change of embedding model invalidates the stored index', async () => {
   assert.equal((await index.search('vendor contract ledger', 1)).length, 1);
 });
 
+test('the status says when the index in memory was built with another model or dimension, until the next build', async () => {
+  let model = MODEL;
+  const { index, fake, statuses } = setup(sampleVault(), { modelId: () => model });
+  await index.build(['Projects']);
+  assert.equal(index.status().modelPending, undefined);
+  assert.ok(statuses.every((s) => !('modelPending' in s)), 'absent, not false');
+
+  model = 'another-embedder@256';
+  assert.equal(index.status().modelPending, true);
+  assert.equal(index.status().status, 'ready', 'the counts shown are those of the old index');
+  assert.equal(index.status().chunks, 5);
+  assert.deepEqual(await index.search('vendor contract ledger', 3), [], 'which answers nothing');
+
+  await index.build(['Projects']);
+  assert.equal(index.status().modelPending, undefined);
+  assert.equal(statuses[statuses.length - 1].modelPending, undefined);
+  assert.equal(fake.texts().length, 10, 'everything was embedded again');
+  assert.equal((await index.search('vendor contract ledger', 1)).length, 1);
+
+  // The same model asked for another dimension is another space too.
+  (fake.embedder as { dim: number }).dim = 128;
+  assert.equal(index.status().modelPending, true);
+});
+
 test('a corrupt stored index is ignored', async () => {
   const vault = sampleVault();
   await setup(vault).index.build(['Projects']);
@@ -615,7 +640,9 @@ test('a corrupt stored index is ignored', async () => {
     { index: good.index, vectors: good.vectors.subarray(0, good.vectors.byteLength - 4) },
     { index: '{"v":1,', vectors: good.vectors },
     { index: 'null', vectors: good.vectors },
-    { index: good.index.replace('"v":1', '"v":2'), vectors: good.vectors },
+    { index: good.index.replace('"v":2', '"v":3'), vectors: good.vectors },
+    { index: good.index.replace('"saveId":"', '"saveId":"0'), vectors: good.vectors },
+    { index: good.index, vectors: good.vectors.subarray(VECTORS_HEADER_BYTES) },
     { index: good.index.replace('Projects/Atlas.md#1', 'Projects/Atlas.md#9'), vectors: good.vectors },
     { index: good.index.replace('"folders":["Projects"]', '"folders":"Projects"'), vectors: good.vectors },
   ];
@@ -636,6 +663,72 @@ test('a corrupt stored index is ignored', async () => {
   const { index } = setup(vault);
   await index.load();
   assert.equal(index.status().status, 'none');
+});
+
+test('index.json and vectors.bin are read together only when they come from the same save', async () => {
+  const vault = sampleVault();
+  const first = setup(vault);
+  await first.index.build(['Projects']);
+  assert.ok(vault.state.saved);
+  const a = vault.state.saved;
+  // The chunks of Atlas move to the end of the vector order; their number does not change.
+  vault.rename('Projects/Atlas.md', 'Projects/Atlas map.md');
+  await first.index.renameFile('Projects/Atlas.md', 'Projects/Atlas map.md');
+  await first.index.dispose();
+  assert.ok(vault.state.saved);
+  const b = vault.state.saved;
+  assert.notEqual(b, a);
+  assert.equal(b.vectors.byteLength, a.vectors.byteLength, 'the lengths alone cannot tell the two saves apart');
+
+  // What the files carry: a header in front of the vectors, with the id of the head.
+  assert.equal(String.fromCharCode(...a.vectors.subarray(0, 4)), VECTORS_MAGIC);
+  const idOf = (saved: { index: string }): string => JSON.parse(saved.index).saveId;
+  assert.match(idOf(a), /^[0-9a-f]{16}$/);
+  assert.notEqual(idOf(a), idOf(b));
+  assert.equal([...a.vectors.subarray(8, 16)].map((byte) => byte.toString(16).padStart(2, '0')).join(''), idOf(a));
+
+  // A save writes vectors.bin, then index.json: a quit or a crash between the two leaves this pair.
+  vault.state.saved = { index: a.index, vectors: b.vectors };
+  const mixed = setup(vault);
+  await mixed.index.load();
+  assert.equal(mixed.index.status().status, 'none');
+  assert.equal(mixed.index.status().chunks, 0);
+  assert.equal(mixed.statuses[mixed.statuses.length - 1].error, null, 'rebuilt, not complained about');
+  assert.deepEqual(await mixed.index.search('map of data owners', 3), []);
+
+  for (const pair of [a, b]) {
+    vault.state.saved = pair;
+    const whole = setup(vault);
+    await whole.index.load();
+    assert.equal(whole.index.status().status, 'ready');
+    assert.equal(whole.index.status().chunks, 5);
+  }
+  assert.equal(vault.persisted().store.get('Projects/Atlas map.md#0')?.meta.title, 'Atlas map');
+
+  // The index of 0.1.4: one version earlier, no save id, and the vectors as they are.
+  const old = JSON.parse(a.index);
+  delete old.saveId;
+  old.v = 1;
+  vault.state.saved = { index: JSON.stringify(old), vectors: a.vectors.subarray(VECTORS_HEADER_BYTES) };
+  const upgraded = setup(vault);
+  await upgraded.index.load();
+  assert.equal(upgraded.index.status().status, 'none');
+  assert.equal(upgraded.statuses[upgraded.statuses.length - 1].error, null);
+});
+
+test('the save id is the one given, and a save with an unusable one is not written', async () => {
+  const ids = ['0123456789abcdef', 'not sixteen hex characters'];
+  const { index, vault, statuses } = setup(sampleVault(), { saveId: () => ids.shift() ?? '' });
+  await index.build(['Projects']);
+  assert.ok(vault.state.saved);
+  assert.equal(JSON.parse(vault.state.saved.index).saveId, '0123456789abcdef');
+  assert.deepEqual([...vault.state.saved.vectors.subarray(8, 16)], [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]);
+
+  vault.write('Projects/Atlas.md', `${ATLAS}\n\nA paragraph that makes the index dirty.`);
+  await index.updateFile('Projects/Atlas.md');
+  await index.dispose();
+  assert.equal(vault.log.saves, 1, 'the second save was refused before anything was written');
+  assert.match(statuses[statuses.length - 1].error ?? '', /^Could not save the index: Invalid save id/);
 });
 
 test('renameFile re-keys the chunks without embedding', async () => {

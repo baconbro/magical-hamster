@@ -3889,10 +3889,12 @@ class MeetingSession implements HamsterSession {
       now.total === status.total &&
       now.error === status.error &&
       (now.foldersPending ?? false) === pending &&
+      (now.modelPending ?? false) === (status.modelPending ?? false) &&
       sameList(now.folders, folders)
     ) {
       return;
     }
+    // `modelPending` comes through as the index reports it: set when true, absent otherwise.
     const next: VaultIndexStatus = { ...status, folders: sameList(now.folders, folders) ? now.folders : folders };
     if (pending) next.foldersPending = true;
     this.patch({ index: next });

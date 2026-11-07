@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire, registerHooks } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -304,6 +304,25 @@ describe('main: the runtime folder of the stats and the index', () => {
     await t.session.deps.statsIO.save(stats);
 
     assert.equal(existsSync(join(moved, 'stats.json')), false);
+  });
+
+  it('sweeps the temporary file of a save that was cut short before it reads the index', async () => {
+    const started = join(scratchDir(), 'runtime');
+    const t = await load(null, { runtimeDir: started });
+    const io = t.session.deps.vaultIndexIO;
+    assert.ok(io, 'the plugin gives the session an index');
+    await io.save('{"v":2}', new Uint8Array([1, 2, 3]));
+    const [dir] = readdirSync(join(started, 'index'));
+    // What writeFileAtomic leaves when Obsidian dies between its write and its rename.
+    const leftover = join(started, 'index', dir, 'index.json.x.tmp');
+    writeFileSync(leftover, '{');
+
+    assert.equal(await io.load().then((found) => found?.index), '{"v":2}');
+    assert.equal(existsSync(leftover), false);
+    assert.deepEqual(readdirSync(join(started, 'index', dir)).sort(), ['index.json', 'vectors.bin']);
+    // Before any save there is no folder to sweep and nothing to read: neither is an error.
+    const fresh = await load(null, { runtimeDir: join(scratchDir(), 'fresh') });
+    assert.equal(await fresh.session.deps.vaultIndexIO?.load(), null);
   });
 });
 

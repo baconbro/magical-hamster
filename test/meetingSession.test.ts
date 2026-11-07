@@ -6097,6 +6097,39 @@ describe('settings changed while the plugin runs', () => {
     await settle();
     assert.equal(env.state().ollama.remoteHost, null);
   });
+
+  it('says that the index was built with another embedding model, until it is rebuilt', async () => {
+    const env = await boot({ index: true });
+    await env.c.buildIndex(['10 Work']);
+    assert.equal(env.state().index.status, 'ready');
+    assert.equal(env.state().index.modelPending, undefined);
+
+    env.world.llm.installed = ['gemma4:12b', 'other-embedder:1b'];
+    env.world.setSettings({ embedModel: 'other-embedder:1b' });
+    env.session.handleSettingsChange();
+    await settle();
+    assert.equal(env.state().index.modelPending, true, 'the sidebar can say so');
+    assert.equal(env.state().index.status, 'ready');
+    assert.equal(env.state().index.files, 2, 'the index itself waits for a rebuild');
+
+    // Nothing of it is answered from meanwhile.
+    env.world.llm.answer = () => 'The notes do not say.';
+    await env.c.ask('What is the training budget for this year?');
+    assert.deepEqual(env.state().qa.entries[0].sources, []);
+    assert.doesNotMatch(userMessage(env.world.llm.chats.at(-1) as ChatRequest), /40000 dollars/);
+
+    const embeds = env.world.llm.embeds.length;
+    await env.c.buildIndex(env.state().index.folders);
+    assert.equal(env.state().index.status, 'ready');
+    assert.equal(env.state().index.modelPending, undefined);
+    assert.ok(env.world.llm.embeds.slice(embeds).some((req) => req.model === 'other-embedder:1b'), 'built with the new model');
+
+    // A setting that leaves the model alone does not redraw the block.
+    const before = env.state().index;
+    env.world.setSettings({ micLabel: 'Mic (room)' });
+    env.session.handleSettingsChange();
+    assert.equal(env.state().index, before);
+  });
 });
 
 describe('the notes a question reads', () => {
