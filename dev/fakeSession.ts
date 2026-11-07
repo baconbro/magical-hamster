@@ -71,13 +71,13 @@ function parseDaily(text: string, soft: RegExp): ParsedSection[] {
     offsets.push(offset);
     offset += line.length + 1;
   }
-  const offsetOf = (line: number) => (line < lines.length ? (offsets[line] as number) : text.length);
+  const offsetOf = (line: number) => (line < lines.length ? offsets[line] : text.length);
 
   const anchors: Array<{ line: number; level: number; isHeading: boolean; rawTitle: string }> = [];
   lines.forEach((line, i) => {
     const heading = HEADING.exec(line);
     if (heading) {
-      anchors.push({ line: i, level: (heading[1] as string).length, isHeading: true, rawTitle: heading[2] as string });
+      anchors.push({ line: i, level: heading[1].length, isHeading: true, rawTitle: heading[2] });
     } else if (soft.test(line)) {
       anchors.push({ line: i, level: 0, isHeading: false, rawTitle: line.trim() });
     }
@@ -87,7 +87,7 @@ function parseDaily(text: string, soft: RegExp): ParsedSection[] {
   return anchors.map((anchor, index) => {
     let end = lines.length;
     for (let j = index + 1; j < anchors.length; j++) {
-      const next = anchors[j] as (typeof anchors)[number];
+      const next = anchors[j];
       /* A heading runs to the next heading of its level or above; a soft marker also ends it, and ends at anything. */
       if (!anchor.isHeading || !next.isHeading || next.level <= anchor.level) {
         end = next.line;
@@ -95,7 +95,7 @@ function parseDaily(text: string, soft: RegExp): ParsedSection[] {
       }
     }
 
-    const links = [...anchor.rawTitle.matchAll(WIKILINK)].map((m) => (m[1] as string).trim());
+    const links = [...anchor.rawTitle.matchAll(WIKILINK)].map((m) => m[1].trim());
     const title = anchor.rawTitle.replace(WIKILINK, (_all, target: string, alias?: string) => alias ?? target).trim();
     const ordinal = seen.get(title) ?? 0;
     seen.set(title, ordinal + 1);
@@ -104,7 +104,7 @@ function parseDaily(text: string, soft: RegExp): ParsedSection[] {
     const ids = new Map<string, number>();
     let linkLine: number | null = null;
     for (let i = anchor.line + 1; i < end; i++) {
-      const raw = lines[i] as string;
+      const raw = lines[i];
       const trimmed = raw.trim();
       if (trimmed === '') continue;
       if (LINK_LINE.test(trimmed)) {
@@ -117,7 +117,7 @@ function parseDaily(text: string, soft: RegExp): ParsedSection[] {
       ids.set(base, count + 1);
       items.push({
         id: count === 0 ? base : `${base}#${count}`,
-        text: topic ? (topic[1] as string) : trimmed.replace(LIST_MARKER, ''),
+        text: topic ? topic[1] : trimmed.replace(LIST_MARKER, ''),
         raw,
         line: i,
         kind: topic ? 'topic' : 'item',
@@ -401,8 +401,13 @@ const STT_MISSING_MESSAGE =
 
 /* ───────────────────────────── The session ──────────────────────────── */
 
-export function createFakeSession(opts: { dailyTextarea: HTMLTextAreaElement }): FakeSession {
+export function createFakeSession(opts: {
+  dailyTextarea: HTMLTextAreaElement;
+  /** Where the page shows what the real session would say in a notice. */
+  toast: (message: string) => void;
+}): FakeSession {
   const textarea = opts.dailyTextarea;
+  const { toast } = opts;
   const soft = softMarkerRegex(DEFAULT_SETTINGS);
   const today = isoDate(new Date());
   const daily: DailyInfo = {
@@ -688,7 +693,7 @@ export function createFakeSession(opts: { dailyTextarea: HTMLTextAreaElement }):
   function speakNext(): void {
     const at = epoch;
     if (get().recording !== 'recording' || !sttInstalled) return;
-    const line = SCRIPT[scriptAt % SCRIPT.length] as ScriptLine;
+    const line = SCRIPT[scriptAt % SCRIPT.length];
     scriptAt += 1;
     const words = line.text.split(' ');
     const t0 = elapsedSeconds();
@@ -842,17 +847,17 @@ export function createFakeSession(opts: { dailyTextarea: HTMLTextAreaElement }):
     },
 
     async useActiveNote() {
-      console.info('[harness] "Use this note" needs the real session: open the page without ?mode=fake.');
+      toast('"Use this note" needs the real session: open the page without ?mode=fake.');
     },
     async writeIntoActiveNote() {
-      console.info('[harness] "Write the meeting into this note" needs the real session: open the page without ?mode=fake.');
+      toast('"Write the meeting into this note" needs the real session: open the page without ?mode=fake.');
     },
     async linkAtCursor() {
       const meeting = get().meeting;
       const target = get().activeSection;
       if (!meeting?.manual) return;
       if (!target) {
-        console.info('[harness] Put the cursor in a section of the daily note first.');
+        toast('Put the cursor in a section of the daily note first.');
         return;
       }
       const key = keyOf(target);
@@ -923,7 +928,7 @@ export function createFakeSession(opts: { dailyTextarea: HTMLTextAreaElement }):
     },
 
     openCompanion() {
-      console.info('[harness] open', get().meeting?.companionPath);
+      toast(`The scripted session opens no note: this one is ${get().meeting?.companionPath ?? 'not written yet'}.`);
     },
 
     openDaily() {
@@ -1119,9 +1124,10 @@ export function createFakeSession(opts: { dailyTextarea: HTMLTextAreaElement }):
     },
 
     copy(text: string) {
-      /* The clipboard needs a focused, secure page; when the harness is not, the text is still shown. */
-      navigator.clipboard?.writeText(text).catch(() => undefined);
-      console.info('[harness] copied:\n' + text);
+      /* The clipboard needs a focused, secure page; when the harness is not, the text is shown instead. */
+      const show = (): void => toast(text);
+      if (navigator.clipboard) navigator.clipboard.writeText(text).catch(show);
+      else show();
     },
   };
 
@@ -1181,7 +1187,7 @@ export function createFakeSession(opts: { dailyTextarea: HTMLTextAreaElement }):
     const turns: Turn[] = [];
     const step = endSeconds / (count + 1);
     for (let i = 0; i < count; i++) {
-      const line = SCRIPT[i % SCRIPT.length] as ScriptLine;
+      const line = SCRIPT[i % SCRIPT.length];
       const t0 = step * (i + 0.2);
       turns.push({ id: nextTurnId(), source: line.source, t0, t1: t0 + step * 0.7, text: line.text, lang: detectLang(line.text) });
     }

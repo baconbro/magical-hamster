@@ -3530,7 +3530,7 @@ class MeetingSession implements HamsterSession {
           asTasks: s.actionItemsAsTasks,
           speakerLabels: this.labels(),
         },
-        stream.push,
+        (text) => stream.push(text),
         abort.signal,
       );
       stream.cancel();
@@ -3640,7 +3640,7 @@ class MeetingSession implements HamsterSession {
           transcriptTail: meeting ? this.transcriptTail() : '',
           sources: run.sources,
         },
-        stream.push,
+        (text) => stream.push(text),
         run.abort.signal,
       );
       stream.cancel();

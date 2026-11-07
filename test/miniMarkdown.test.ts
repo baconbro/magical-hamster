@@ -42,6 +42,20 @@ class FakeNode {
     this.attributes[name] = value;
   }
 
+  /* Obsidian's helpers, as Obsidian has them: made in this node's document, then appended to it. */
+  createEl(tag: string, o?: { cls?: string; text?: string; attr?: Record<string, string> } | string): FakeNode {
+    const info = typeof o === 'string' ? { cls: o } : (o ?? {});
+    const el = this.ownerDocument.createElement(tag);
+    if (info.cls) el.className = info.cls;
+    if (info.text) el.appendChild(this.ownerDocument.createTextNode(info.text));
+    for (const [name, value] of Object.entries(info.attr ?? {})) el.setAttribute(name, value);
+    return this.appendChild(el);
+  }
+
+  createDiv(o?: Parameters<FakeNode['createEl']>[1]): FakeNode {
+    return this.createEl('div', o);
+  }
+
   /** A compact picture of the subtree: `ul(li("a"),li(strong("b")))`. */
   shape(): string {
     if (this.tag === '#text') return JSON.stringify(this.text);

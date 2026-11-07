@@ -473,6 +473,7 @@ const realDom = {
   AudioContext: globals.AudioContext,
   AudioWorkletNode: globals.AudioWorkletNode,
   mediaDevices: Object.getOwnPropertyDescriptor(navigator, 'mediaDevices'),
+  window: Object.getOwnPropertyDescriptor(globalThis, 'window'),
 };
 
 function restoreDom(): void {
@@ -480,6 +481,8 @@ function restoreDom(): void {
   globals.AudioWorkletNode = realDom.AudioWorkletNode;
   if (realDom.mediaDevices) Object.defineProperty(navigator, 'mediaDevices', realDom.mediaDevices);
   else delete (navigator as unknown as Record<string, unknown>).mediaDevices;
+  if (realDom.window) Object.defineProperty(globalThis, 'window', realDom.window);
+  else delete globals.window;
 }
 
 interface DomScript {
@@ -497,7 +500,7 @@ interface DomScript {
   neverCloses?: boolean;
 }
 
-/** Replaces the WebAudio and media-device globals micCapture.ts uses, for one test. */
+/** Replaces the WebAudio, media-device and window globals micCapture.ts uses, for one test. */
 function installDom(t: TestContext, script: DomScript = {}) {
   const dom = {
     requests: [] as MediaStreamConstraints[],
@@ -576,6 +579,8 @@ function installDom(t: TestContext, script: DomScript = {}) {
   globals.AudioContext = FakeContext;
   globals.AudioWorkletNode = FakeWorkletNode;
   Object.defineProperty(navigator, 'mediaDevices', { value: mediaDevices, configurable: true });
+  // A renderer's window is its global object: the timers it is asked for are the ones a test mocks.
+  globals.window = globalThis;
   t.after(restoreDom);
   return dom;
 }

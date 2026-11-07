@@ -21,3 +21,14 @@ export function abortError(message = 'Cancelled'): Error & { kind: 'aborted' } {
   error.kind = 'aborted';
   return error;
 }
+
+/**
+ * Rejections are Errors. Anything else thrown is wrapped and kept as `cause`,
+ * with its own fields copied: what callers read (`kind`, `name`, `model`,
+ * `message`) is still there, and a value that had no message still has none.
+ */
+export function asError(value: unknown): Error {
+  if (value instanceof Error) return value;
+  const error = new Error('', { cause: value });
+  return typeof value === 'object' && value !== null ? Object.assign(error, value) : error;
+}

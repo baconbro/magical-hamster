@@ -90,14 +90,14 @@ async function resumeWithin(ctx: AudioContext, ms: number): Promise<void> {
   const resumed = ctx.resume();
   // If the timer wins, the context is closed under this promise.
   resumed.catch(() => {});
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timer: number | undefined;
   const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new CaptureError('Audio capture did not start in time.')), ms);
+    timer = window.setTimeout(() => reject(new CaptureError('Audio capture did not start in time.')), ms);
   });
   try {
     await Promise.race([resumed, late]);
   } finally {
-    clearTimeout(timer);
+    window.clearTimeout(timer);
   }
 }
 

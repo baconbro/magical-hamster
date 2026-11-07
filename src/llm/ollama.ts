@@ -36,8 +36,10 @@ export function isOllamaError(e: unknown, kind?: OllamaErrorKind): e is OllamaEr
 export interface OllamaClientOptions {
   /** A function is read on every call, so a settings change applies at once. */
   baseUrl: string | (() => string);
+  /** Default: the window's, which exists wherever the plugin runs (Obsidian, the dev page). */
   fetch?: typeof fetch;
-  clock?: Clock;
+  /** No default: in Obsidian the bare timers can be Node's, so the caller picks (the plugin passes the window's). */
+  clock: Clock;
   /** Longest silence tolerated once the answer has started. Default 60000. */
   interChunkTimeoutMs?: number;
   /** Longest wait for the first chunk. Default max(120000, 30000 + promptTokens * 10). */
@@ -47,14 +49,6 @@ export interface OllamaClientOptions {
 }
 
 type Json = Record<string, unknown>;
-
-const REAL_CLOCK: Clock = {
-  now: () => Date.now(),
-  setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
-  clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>),
-  setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
-  clearInterval: (handle) => globalThis.clearInterval(handle as ReturnType<typeof globalThis.setInterval>),
-};
 
 const DEFAULT_INTER_CHUNK_MS = 60_000;
 const DEFAULT_BUSY_RETRIES = 3;
@@ -228,13 +222,13 @@ function createGuard(clock: Clock, caller: AbortSignal | undefined, model: strin
 }
 
 export function createOllamaClient(opts: OllamaClientOptions): OllamaClient {
-  const clock = opts.clock ?? REAL_CLOCK;
+  const clock = opts.clock;
   const interChunkMs = opts.interChunkTimeoutMs ?? DEFAULT_INTER_CHUNK_MS;
   const firstTokenMs = opts.firstTokenTimeoutMs ?? defaultFirstTokenTimeoutMs;
   const busyRetries = Math.max(0, opts.busyRetries ?? DEFAULT_BUSY_RETRIES);
   // Kept as a bare function: window.fetch throws "Illegal invocation" when
   // called as a method of another object.
-  const doFetch: typeof fetch = opts.fetch ?? ((input, init) => globalThis.fetch(input, init));
+  const doFetch: typeof fetch = opts.fetch ?? ((input, init) => window.fetch(input, init));
 
   const baseUrl = (): string => {
     const raw = typeof opts.baseUrl === 'function' ? opts.baseUrl() : opts.baseUrl;

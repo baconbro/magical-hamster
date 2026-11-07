@@ -1,5 +1,5 @@
 import { Notice, PluginSettingTab, Setting, normalizePath } from 'obsidian';
-import type { App, DropdownComponent, Plugin } from 'obsidian';
+import type { App, DropdownComponent, Plugin, TextComponent } from 'obsidian';
 import { softMarkerUnsupported } from './settings.ts';
 import { remoteHostWarning } from './util/loopback.ts';
 import type { HamsterSettings, LocalSettings } from './types.ts';
@@ -51,6 +51,8 @@ const TOO_SLOW =
   'This pattern is too slow on a long line and would freeze typing. Avoid a repetition inside a repetition, such as (a+)+.';
 
 const ILLEGAL_IN_FILE_NAME = /[[\]#^|/\\:*?"<>\r\n]/;
+
+const OLLAMA_HERE = 'Where Ollama listens on this computer.';
 
 // Where Homebrew puts Node on Apple silicon: an example of what the field takes.
 const NODE_PATH_EXAMPLE = '/opt/homebrew/bin/node';
@@ -283,7 +285,7 @@ export function checkSoftMarkerPattern(
 /** What stands under the Ollama address: where Ollama normally is, or that this address sends the meeting elsewhere. */
 export function describeOllamaAddress(address: string): { text: string; warning: boolean } {
   const warning = remoteHostWarning(address);
-  if (warning === null) return { text: 'Where Ollama listens on this computer.', warning: false };
+  if (warning === null) return { text: OLLAMA_HERE, warning: false };
   return {
     text: `${warning} The address is synced with the vault: every device that opens the vault sends them there too.`,
     warning: true,
@@ -334,268 +336,342 @@ function cleanPath(value: string): string {
   return normalizePath(trimmed);
 }
 
+/**
+ * A row of the tab. Obsidian's settings search finds it by its name and its
+ * description; `render` draws it into the row it is handed, each time the tab
+ * is drawn.
+ */
+interface Row {
+  name: string;
+  desc: string;
+  render: (setting: Setting) => void;
+}
+
+/** The rows under one heading. */
+interface Section {
+  type: 'group';
+  heading: string;
+  items: Row[];
+}
+
+function section(heading: string, items: Row[]): Section {
+  return { type: 'group', heading, items };
+}
+
+/**
+ * A row that `draw` fills in. It names and describes the row itself:
+ * Obsidian does so before `render`, `display()` does not.
+ */
+function row(name: string, desc: string, draw: (setting: Setting) => void): Row {
+  return {
+    name,
+    desc,
+    render: (setting) => {
+      // Nothing is returned: Obsidian would run it as the row's cleanup.
+      draw(setting.setName(name).setDesc(desc));
+    },
+  };
+}
+
 export class HamsterSettingTab extends PluginSettingTab {
   private readonly deps: SettingsTabDeps;
   private queued: Partial<HamsterSettings> = {};
   private timer: number | null = null;
   /* Typed and valid, but not in effect before the field is left: see `ollamaAddress`. */
   private held: Partial<HamsterSettings> = {};
+  /* The runtime folder row changes what two other rows show. Each is set again
+     by the row it belongs to, every time the tab is drawn. */
+  private showNodePlaceholder = (_placeholder: string): void => undefined;
+  private showRuntime = (): void => undefined;
 
   constructor(app: App, plugin: Plugin, deps: SettingsTabDeps) {
     super(app, plugin);
     this.deps = deps;
   }
 
+  /* Obsidian asks for the list when the plugin loads, for its settings search,
+     and draws the tab from that list each time it opens. So the list only says
+     what the rows are: the settings, the runtime and the microphones are read
+     by each row as it is drawn. */
+  getSettingDefinitions(): Section[] {
+    return [
+      section('Models', [
+        this.ollamaAddress(),
+        this.text(
+          'Model',
+          'Writes enhanced notes, summaries and answers. Changing the model reloads it in Ollama.',
+          'llmModel',
+          (raw) => (raw.trim() === '' ? { error: 'Enter a model name, such as gemma4:12b' } : { value: raw.trim() }),
+        ),
+        this.text(
+          'Live enhance model',
+          'Leave empty to use the same model. A second model takes memory of its own.',
+          'liveModel',
+          (raw) => ({ value: raw.trim() }),
+          'Same as the model above',
+        ),
+        this.number(
+          'Context size',
+          'Tokens the model reads at once, sent with every request. Changing it reloads the model in Ollama.',
+          'numCtx',
+          { min: 1024, max: 1048576, integer: true },
+        ),
+        this.text(
+          'Embedding model',
+          'Finds the passages that match a note line or a question. After changing it, build the knowledge index again.',
+          'embedModel',
+          (raw) =>
+            raw.trim() === '' ? { error: 'Enter a model name, such as embeddinggemma-2:270m' } : { value: raw.trim() },
+        ),
+        this.number(
+          'Embedding context size',
+          'Tokens per passage. Changing it reloads the embedding model in Ollama.',
+          'embedNumCtx',
+          { min: 128, max: 32768, integer: true },
+        ),
+        this.number(
+          'Embedding dimensions',
+          'Length of each vector. After changing it, build the knowledge index again.',
+          'embedDimensions',
+          { min: 32, max: 8192, integer: true },
+        ),
+      ]),
+
+      section('Notes', [
+        this.text(
+          'Companion folder',
+          'Where companion notes are created. The folder is created when missing. Empty means the vault root.',
+          'companionFolder',
+          (raw) => ({ value: cleanPath(raw) }),
+        ),
+        this.text(
+          'Companion prefix',
+          'Start of every companion file name. Companions are found by it: notes made with another prefix are no longer recognized.',
+          'companionPrefix',
+          (raw) => {
+            const value = raw.trimStart().normalize('NFC');
+            const error = checkPrefix(value);
+            return error ? { error } : { value };
+          },
+        ),
+        row(
+          'Extra properties',
+          "Added to the properties of each new companion note, one key: value per line, for example area: work. The plugin's own (type, date, tags, links and the like) stay as they are.",
+          (setting) =>
+            setting.addTextArea((area) => {
+              area.setValue(this.deps.settings().companionProperties);
+              area.setPlaceholder('area: work');
+              area.inputEl.rows = 3;
+              area.onChange((raw) => {
+                const result = parseCompanionProperties(raw);
+                if ('error' in result) {
+                  // Not saved: the last valid value stays in use.
+                  this.unqueue('companionProperties');
+                  setting.setErrorMessage(result.error);
+                  return;
+                }
+                setting.setErrorMessage(null);
+                this.saveSoon({ companionProperties: raw.trim() });
+              });
+            }),
+        ),
+        this.choice(
+          'Link placement',
+          'Where the one line goes in the daily note. Directly under a heading, it becomes part of the excerpt other notes show for that heading.',
+          'dailyLinkPlacement',
+          { 'section-end': 'End of the section', heading: 'Under the heading' },
+        ),
+        this.text(
+          'Link text',
+          'Shown in place of the note name. Leave empty to show the name.',
+          'dailyLinkAlias',
+          (raw) => ({ value: raw.trim() }),
+        ),
+        this.toggle(
+          'Keep wikilinks in generated text',
+          'Each link adds a generated excerpt to the linked mentions of that note.',
+          'linkEntitiesInCompanion',
+        ),
+        this.text(
+          'Entity registry',
+          'Optional. Vault path of a note that lists people, projects and governance bodies, to recognize meetings and attendees (see the README). Empty: none.',
+          'entitiesPath',
+          (raw) => ({ value: cleanPath(raw) }),
+        ),
+        this.text(
+          'Meeting lines without a heading',
+          'A regular expression, not case-sensitive. A short line that matches starts a meeting.',
+          'softMarkerPattern',
+          (raw) => {
+            const error = checkSoftMarkerPattern(raw);
+            return error ? { error } : { value: raw };
+          },
+        ),
+        row(
+          'First-write confirmation',
+          'Shown once on this device, before the first companion note is created.',
+          (setting) =>
+            setting.addButton((button) =>
+              button.setButtonText('Ask again before the first write').onClick(() => {
+                this.deps.setLocal({ firstWriteConfirmed: false });
+                new Notice('Magical Hamster: The confirmation will be shown before the next first write.');
+              }),
+            ),
+        ),
+      ]),
+
+      section('Enhance', [
+        this.choice(
+          'Enhance style',
+          'Standard writes full sentences. Concise writes short phrases. A change applies at once: the enhanced notes of the current meeting are written again. The sidebar can change it too, until Obsidian restarts.',
+          'enhanceStyle',
+          { standard: 'Standard', concise: 'Concise' },
+        ),
+        this.toggle(
+          'Live enhance on at start',
+          'Applies the next time Obsidian starts. The sidebar turns it on and off at any time.',
+          'liveEnhanceDefault',
+        ),
+        this.number(
+          'Typing pause',
+          'Milliseconds without typing before live enhance runs.',
+          'enhanceDebounceMs',
+          { min: 200, max: 60000, integer: true },
+        ),
+        this.number(
+          'Longest wait',
+          'Milliseconds after which live enhance runs even while typing continues.',
+          'enhanceMaxWaitMs',
+          { min: 500, max: 300000, integer: true },
+        ),
+      ]),
+
+      section('Summary', [
+        this.choice('Summary style', 'Used for the summary written when a recording stops.', 'summaryStyle', {
+          executive: 'Executive summary',
+          recap: 'Recap',
+          actions: 'Action items',
+        }),
+        this.choice('Summary language', 'Auto keeps the language the meeting was held in.', 'summaryLanguage', {
+          auto: 'Auto',
+          fr: 'French',
+          en: 'English',
+        }),
+        this.toggle(
+          'Tasks as checkboxes',
+          'In the companion note, writes the action items, and the bullets of the tasks you type ("- [ ] ..."), as checkboxes. Other task tools in the vault will count them, so a task you type is listed twice: tick it in your own note. Off, your tasks are marked ☐ (☑ when done).',
+          'actionItemsAsTasks',
+        ),
+      ]),
+
+      section('Speech', [
+        this.choice(
+          'Speech language',
+          'Auto follows the language as people speak, sentence by sentence. A fixed language drops what is said in the other one, so keep Auto for meetings in both. Applies to the next recording.',
+          'sttLanguage',
+          { auto: 'Auto', 'fr-CA': 'French (Canada)', 'fr-FR': 'French (France)', 'en-US': 'English (US)' },
+        ),
+        this.text(
+          'Microphone label',
+          'Name given to the microphone in transcripts. On speakers it hears everyone: use Mic (room).',
+          'micLabel',
+          (raw) => (raw.trim() === '' ? { error: 'Enter a label.' } : { value: raw.trim() }),
+        ),
+        this.microphone(),
+        this.localText(
+          'Node path',
+          'The Node program that runs speech recognition. Leave empty to use the Node that the speech setup recorded. This device only.',
+          'nodePath',
+          () => NODE_PATH_EXAMPLE,
+          {
+            drawn: (field) => {
+              this.showNodePlaceholder = (placeholder) => {
+                field.setPlaceholder(placeholder);
+              };
+            },
+          },
+        ),
+        this.localText(
+          'Runtime folder',
+          'Holds the speech model, the knowledge index and the stats, outside the vault. Leave empty for the default. This device only. A new folder is used for speech at the next recording, and for the index and the stats the next time Obsidian starts. Nothing is copied into it.',
+          'runtimeDir',
+          () => this.deps.defaultRuntimeDir(),
+          { changed: () => this.showRuntime() },
+        ),
+        row('Speech runtime', 'Whether the speech model is installed in the runtime folder.', (setting) => {
+          this.showRuntime = () => {
+            const installed = this.installedRuntime();
+            // Each runtime folder records its own Node: the empty field shows the one it would run.
+            this.showNodePlaceholder(nodePathPlaceholder(installed));
+            setting.setDesc(
+              installed ? `Installed: ${installed.model}` : 'Not installed. Set it up with the command below.',
+            );
+          };
+          this.showRuntime();
+        }),
+        row(
+          'Set up speech recognition',
+          `Once, in Terminal (Applications, Utilities), with Node.js 20 or later installed. It downloads about 490 MB, the sherpa-onnx speech library from npm and the speech model from GitHub, into the runtime folder; run it again to repair or update. For a runtime folder of your own, add --runtime and the folder. The command (the button copies it): ${SPEECH_SETUP_COMMAND} (in Terminal).`,
+          (setting) =>
+            setting.addButton((button) => {
+              button.setButtonText('Copy command').onClick(() => {
+                navigator.clipboard.writeText(SPEECH_SETUP_COMMAND).then(
+                  () => new Notice('Setup command copied: paste it into Terminal.'),
+                  (error: unknown) => console.error('Magical Hamster: could not copy', error),
+                );
+              });
+            }),
+        ),
+      ]),
+
+      section('Knowledge index', [
+        row(
+          'Indexed folders',
+          'One folder per line. A single / is the whole vault. Press Rebuild index in the sidebar to apply.',
+          (setting) =>
+            setting.addTextArea((area) => {
+              area.setValue(this.deps.settings().indexedFolders.join('\n'));
+              area.inputEl.rows = 4;
+              area.onChange((raw) => this.saveSoon({ indexedFolders: parseFolderList(raw) }));
+            }),
+        ),
+      ]),
+
+      section('Stats', [
+        this.number(
+          'Cost per 1,000 tokens',
+          'In dollars. Used for the figure of what running on this computer saved.',
+          'costPer1k',
+          { min: 0, max: 1000 },
+        ),
+      ]),
+
+      section('Debug', [
+        row(
+          'Show the debug tab',
+          'A sidebar tab with every exchange with the model: what was sent and what came back. It holds your notes and transcript, is kept in memory only for the last 100 calls, and is gone when Obsidian closes. This computer only.',
+          (setting) =>
+            setting.addToggle((toggle) => {
+              toggle.setValue(this.deps.local().debugTab);
+              toggle.onChange((value) => this.deps.setLocal({ debugTab: value }));
+            }),
+        ),
+      ]),
+    ];
+  }
+
+  /* Obsidian draws the tab from getSettingDefinitions(), and calls this only
+     when that list is empty. The tests draw the tab here: the same rows, under
+     the same headings. */
   display(): void {
     this.commit();
     this.flush();
     const { containerEl } = this;
     containerEl.empty();
-
-    this.heading('Models');
-    this.ollamaAddress();
-    this.text(
-      'Model',
-      'Writes enhanced notes, summaries and answers. Changing the model reloads it in Ollama.',
-      'llmModel',
-      (raw) => (raw.trim() === '' ? { error: 'Enter a model name, such as gemma4:12b' } : { value: raw.trim() }),
-    );
-    this.text(
-      'Live enhance model',
-      'Leave empty to use the same model. A second model takes memory of its own.',
-      'liveModel',
-      (raw) => ({ value: raw.trim() }),
-      'Same as the model above',
-    );
-    this.number(
-      'Context size',
-      'Tokens the model reads at once, sent with every request. Changing it reloads the model in Ollama.',
-      'numCtx',
-      { min: 1024, max: 1048576, integer: true },
-    );
-    this.text(
-      'Embedding model',
-      'Finds the passages that match a note line or a question. After changing it, build the knowledge index again.',
-      'embedModel',
-      (raw) => (raw.trim() === '' ? { error: 'Enter a model name, such as embeddinggemma-2:270m' } : { value: raw.trim() }),
-    );
-    this.number(
-      'Embedding context size',
-      'Tokens per passage. Changing it reloads the embedding model in Ollama.',
-      'embedNumCtx',
-      { min: 128, max: 32768, integer: true },
-    );
-    this.number(
-      'Embedding dimensions',
-      'Length of each vector. After changing it, build the knowledge index again.',
-      'embedDimensions',
-      { min: 32, max: 8192, integer: true },
-    );
-
-    this.heading('Notes');
-    this.text(
-      'Companion folder',
-      'Where companion notes are created. The folder is created when missing. Empty means the vault root.',
-      'companionFolder',
-      (raw) => ({ value: cleanPath(raw) }),
-    );
-    this.text(
-      'Companion prefix',
-      'Start of every companion file name. Companions are found by it: notes made with another prefix are no longer recognized.',
-      'companionPrefix',
-      (raw) => {
-        const value = raw.trimStart().normalize('NFC');
-        const error = checkPrefix(value);
-        return error ? { error } : { value };
-      },
-    );
-    const properties = new Setting(this.containerEl)
-      .setName('Extra properties')
-      .setDesc(
-        "Added to the properties of each new companion note, one key: value per line, for example area: work. The plugin's own (type, date, tags, links and the like) stay as they are.",
-      );
-    properties.addTextArea((area) => {
-      area.setValue(this.deps.settings().companionProperties);
-      area.setPlaceholder('area: work');
-      area.inputEl.rows = 3;
-      area.onChange((raw) => {
-        const result = parseCompanionProperties(raw);
-        if ('error' in result) {
-          // Not saved: the last valid value stays in use.
-          this.unqueue('companionProperties');
-          properties.setErrorMessage(result.error);
-          return;
-        }
-        properties.setErrorMessage(null);
-        this.saveSoon({ companionProperties: raw.trim() });
-      });
-    });
-    this.choice(
-      'Link placement',
-      'Where the one line goes in the daily note. Directly under a heading, it becomes part of the excerpt other notes show for that heading.',
-      'dailyLinkPlacement',
-      { 'section-end': 'End of the section', heading: 'Under the heading' },
-    );
-    this.text(
-      'Link text',
-      'Shown in place of the note name. Leave empty to show the name.',
-      'dailyLinkAlias',
-      (raw) => ({ value: raw.trim() }),
-    );
-    this.toggle(
-      'Keep wikilinks in generated text',
-      'Each link adds a generated excerpt to the linked mentions of that note.',
-      'linkEntitiesInCompanion',
-    );
-    this.text(
-      'Entity registry',
-      'Optional. Vault path of a note that lists people, projects and governance bodies, to recognize meetings and attendees (see the README). Empty: none.',
-      'entitiesPath',
-      (raw) => ({ value: cleanPath(raw) }),
-    );
-    this.text(
-      'Meeting lines without a heading',
-      'A regular expression, not case-sensitive. A short line that matches starts a meeting.',
-      'softMarkerPattern',
-      (raw) => {
-        const error = checkSoftMarkerPattern(raw);
-        return error ? { error } : { value: raw };
-      },
-    );
-    new Setting(containerEl)
-      .setName('First-write confirmation')
-      .setDesc('Shown once on this device, before the first companion note is created.')
-      .addButton((button) =>
-        button.setButtonText('Ask again before the first write').onClick(() => {
-          this.deps.setLocal({ firstWriteConfirmed: false });
-          new Notice('Magical Hamster: The confirmation will be shown before the next first write.');
-        }),
-      );
-
-    this.heading('Enhance');
-    this.choice(
-      'Enhance style',
-      'Standard writes full sentences. Concise writes short phrases. A change applies at once: the enhanced notes of the current meeting are written again. The sidebar can change it too, until Obsidian restarts.',
-      'enhanceStyle',
-      { standard: 'Standard', concise: 'Concise' },
-    );
-    this.toggle(
-      'Live enhance on at start',
-      'Applies the next time Obsidian starts. The sidebar turns it on and off at any time.',
-      'liveEnhanceDefault',
-    );
-    this.number(
-      'Typing pause',
-      'Milliseconds without typing before live enhance runs.',
-      'enhanceDebounceMs',
-      { min: 200, max: 60000, integer: true },
-    );
-    this.number(
-      'Longest wait',
-      'Milliseconds after which live enhance runs even while typing continues.',
-      'enhanceMaxWaitMs',
-      { min: 500, max: 300000, integer: true },
-    );
-
-    this.heading('Summary');
-    this.choice('Summary style', 'Used for the summary written when a recording stops.', 'summaryStyle', {
-      executive: 'Executive summary',
-      recap: 'Recap',
-      actions: 'Action items',
-    });
-    this.choice('Summary language', 'Auto keeps the language the meeting was held in.', 'summaryLanguage', {
-      auto: 'Auto',
-      fr: 'French',
-      en: 'English',
-    });
-    this.toggle(
-      'Tasks as checkboxes',
-      'In the companion note, writes the action items, and the bullets of the tasks you type ("- [ ] ..."), as checkboxes. Other task tools in the vault will count them, so a task you type is listed twice: tick it in your own note. Off, your tasks are marked ☐ (☑ when done).',
-      'actionItemsAsTasks',
-    );
-
-    this.heading('Speech');
-    this.choice(
-      'Speech language',
-      'Auto follows the language as people speak, sentence by sentence. A fixed language drops what is said in the other one, so keep Auto for meetings in both. Applies to the next recording.',
-      'sttLanguage',
-      { auto: 'Auto', 'fr-CA': 'French (Canada)', 'fr-FR': 'French (France)', 'en-US': 'English (US)' },
-    );
-    this.text(
-      'Microphone label',
-      'Name given to the microphone in transcripts. On speakers it hears everyone: use Mic (room).',
-      'micLabel',
-      (raw) => (raw.trim() === '' ? { error: 'Enter a label.' } : { value: raw.trim() }),
-    );
-    this.microphone();
-    const showNodePlaceholder = this.localText(
-      'Node path',
-      'The Node program that runs speech recognition. Leave empty to use the Node that the speech setup recorded. This device only.',
-      'nodePath',
-      NODE_PATH_EXAMPLE,
-    );
-    let showRuntime = (): void => undefined;
-    this.localText(
-      'Runtime folder',
-      'Holds the speech model, the knowledge index and the stats, outside the vault. Leave empty for the default. This device only. A new folder is used for speech at the next recording, and for the index and the stats the next time Obsidian starts. Nothing is copied into it.',
-      'runtimeDir',
-      this.deps.defaultRuntimeDir(),
-      () => showRuntime(),
-    );
-    const runtime = new Setting(containerEl).setName('Speech runtime');
-    new Setting(containerEl)
-      .setName('Set up speech recognition')
-      .setDesc(
-        `Once, in Terminal (Applications, Utilities), with Node.js 20 or later installed. It downloads about 490 MB, the sherpa-onnx speech library from npm and the speech model from GitHub, into the runtime folder; run it again to repair or update. For a runtime folder of your own, add --runtime and the folder. The command (the button copies it): ${SPEECH_SETUP_COMMAND} (in Terminal).`,
-      )
-      .addButton((button) => {
-        button.setButtonText('Copy command').onClick(() => {
-          navigator.clipboard.writeText(SPEECH_SETUP_COMMAND).then(
-            () => new Notice('Setup command copied: paste it into Terminal.'),
-            (error: unknown) => console.error('Magical Hamster: could not copy', error),
-          );
-        });
-      });
-    showRuntime = () => {
-      const installed = this.installedRuntime();
-      // Each runtime folder records its own Node: the empty field shows the one it would run.
-      showNodePlaceholder(nodePathPlaceholder(installed));
-      runtime.setDesc(
-        installed
-          ? `Installed: ${installed.model}`
-          : 'Not installed. Set it up with the command below.',
-      );
-    };
-    showRuntime();
-
-    this.heading('Knowledge index');
-    new Setting(containerEl)
-      .setName('Indexed folders')
-      .setDesc('One folder per line. A single / is the whole vault. Press Rebuild index in the sidebar to apply.')
-      .addTextArea((area) => {
-        area.setValue(this.deps.settings().indexedFolders.join('\n'));
-        area.inputEl.rows = 4;
-        area.onChange((raw) => this.saveSoon({ indexedFolders: parseFolderList(raw) }));
-      });
-
-    this.heading('Stats');
-    this.number(
-      'Cost per 1,000 tokens',
-      'In dollars. Used for the figure of what running on this computer saved.',
-      'costPer1k',
-      { min: 0, max: 1000 },
-    );
-
-    this.heading('Debug');
-    new Setting(this.containerEl)
-      .setName('Show the debug tab')
-      .setDesc(
-        'A sidebar tab with every exchange with the model: what was sent and what came back. It holds your notes and transcript, is kept in memory only for the last 100 calls, and is gone when Obsidian closes. This computer only.',
-      )
-      .addToggle((toggle) => {
-        toggle.setValue(this.deps.local().debugTab);
-        toggle.onChange((value) => this.deps.setLocal({ debugTab: value }));
-      });
+    for (const { heading, items } of this.getSettingDefinitions()) {
+      new Setting(containerEl).setName(heading).setHeading();
+      for (const item of items) item.render(new Setting(containerEl));
+    }
   }
 
   hide(): void {
@@ -605,8 +681,14 @@ export class HamsterSettingTab extends PluginSettingTab {
     super.hide();
   }
 
-  private heading(name: string): void {
-    new Setting(this.containerEl).setName(name).setHeading();
+  /* Obsidian calls this when data.json changes on disk (a sync, an edit by hand) and redraws the
+     open tab from the definitions, without display(). What is being typed is put into effect
+     first, as display() does: otherwise the redrawn field shows the old value while the typed one
+     still waits to be saved. At load nothing is held or queued, and this saves nothing. */
+  update(): void {
+    this.commit();
+    this.flush();
+    super.update();
   }
 
   /* The Ollama address decides where the text of a meeting is sent. Unlike the
@@ -615,32 +697,33 @@ export class HamsterSettingTab extends PluginSettingTab {
      for its models, and sent the next request, at once. It takes effect when
      the field is left, on Enter, and when the settings close. An address that
      is not this computer says so under the field as soon as it is typed. */
-  private ollamaAddress(): void {
-    const setting = new Setting(this.containerEl).setName('Ollama address');
-    const describe = (address: string): void => {
-      const { text, warning } = describeOllamaAddress(address);
-      setting.setDesc(text);
-      setting.descEl.toggleClass('mod-warning', warning);
-    };
-    describe(this.deps.settings().ollamaUrl);
-    setting.addText((field) => {
-      field.setValue(this.deps.settings().ollamaUrl);
-      field.onChange((raw) => {
-        const value = raw.trim();
-        if (!isHttpAddress(value)) {
-          // Not saved: the last valid value stays in use, and it is the one described.
-          delete this.held.ollamaUrl;
-          setting.setErrorMessage('Enter an address such as http://localhost:11434');
-          describe(this.deps.settings().ollamaUrl);
-          return;
-        }
-        setting.setErrorMessage(null);
-        describe(value);
-        this.held.ollamaUrl = value;
-      });
-      field.inputEl.addEventListener('blur', () => this.commit());
-      field.inputEl.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' && !event.isComposing) this.commit();
+  private ollamaAddress(): Row {
+    return row('Ollama address', OLLAMA_HERE, (setting) => {
+      const describe = (address: string): void => {
+        const { text, warning } = describeOllamaAddress(address);
+        setting.setDesc(text);
+        setting.descEl.toggleClass('mod-warning', warning);
+      };
+      describe(this.deps.settings().ollamaUrl);
+      setting.addText((field) => {
+        field.setValue(this.deps.settings().ollamaUrl);
+        field.onChange((raw) => {
+          const value = raw.trim();
+          if (!isHttpAddress(value)) {
+            // Not saved: the last valid value stays in use, and it is the one described.
+            delete this.held.ollamaUrl;
+            setting.setErrorMessage('Enter an address such as http://localhost:11434');
+            describe(this.deps.settings().ollamaUrl);
+            return;
+          }
+          setting.setErrorMessage(null);
+          describe(value);
+          this.held.ollamaUrl = value;
+        });
+        field.inputEl.addEventListener('blur', () => this.commit());
+        field.inputEl.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' && !event.isComposing) this.commit();
+        });
       });
     });
   }
@@ -651,51 +734,52 @@ export class HamsterSettingTab extends PluginSettingTab {
     key: TextKey,
     read: (raw: string) => { value: string } | { error: string },
     placeholder?: string,
-  ): void {
-    const setting = new Setting(this.containerEl).setName(name).setDesc(desc);
-    setting.addText((field) => {
-      field.setValue(this.deps.settings()[key]);
-      if (placeholder) field.setPlaceholder(placeholder);
-      field.onChange((raw) => {
-        const result = read(raw);
-        if ('error' in result) {
-          // Not saved: the last valid value stays in use.
-          this.unqueue(key);
-          setting.setErrorMessage(result.error);
-          return;
-        }
-        setting.setErrorMessage(null);
-        this.saveSoon({ [key]: result.value });
+  ): Row {
+    return row(name, desc, (setting) => {
+      setting.addText((field) => {
+        field.setValue(this.deps.settings()[key]);
+        if (placeholder) field.setPlaceholder(placeholder);
+        field.onChange((raw) => {
+          const result = read(raw);
+          if ('error' in result) {
+            // Not saved: the last valid value stays in use.
+            this.unqueue(key);
+            setting.setErrorMessage(result.error);
+            return;
+          }
+          setting.setErrorMessage(null);
+          this.saveSoon({ [key]: result.value });
+        });
       });
     });
   }
 
-  private number(name: string, desc: string, key: NumberKey, rule: NumberRule): void {
-    const setting = new Setting(this.containerEl).setName(name).setDesc(desc);
-    setting.addText((field) => {
-      field.setValue(String(this.deps.settings()[key]));
-      field.inputEl.inputMode = rule.integer ? 'numeric' : 'decimal';
-      field.onChange((raw) => {
-        const value = parseNumber(raw, rule);
-        if (value === null) {
-          this.unqueue(key);
-          setting.setErrorMessage(describeRule(rule));
-          return;
-        }
-        setting.setErrorMessage(null);
-        this.saveSoon({ [key]: value });
+  private number(name: string, desc: string, key: NumberKey, rule: NumberRule): Row {
+    return row(name, desc, (setting) => {
+      setting.addText((field) => {
+        field.setValue(String(this.deps.settings()[key]));
+        field.inputEl.inputMode = rule.integer ? 'numeric' : 'decimal';
+        field.onChange((raw) => {
+          const value = parseNumber(raw, rule);
+          if (value === null) {
+            this.unqueue(key);
+            setting.setErrorMessage(describeRule(rule));
+            return;
+          }
+          setting.setErrorMessage(null);
+          this.saveSoon({ [key]: value });
+        });
       });
     });
   }
 
-  private toggle(name: string, desc: string, key: ToggleKey): void {
-    new Setting(this.containerEl)
-      .setName(name)
-      .setDesc(desc)
-      .addToggle((toggle) => {
+  private toggle(name: string, desc: string, key: ToggleKey): Row {
+    return row(name, desc, (setting) =>
+      setting.addToggle((toggle) => {
         toggle.setValue(this.deps.settings()[key]);
         toggle.onChange((value) => this.saveNow({ [key]: value }));
-      });
+      }),
+    );
   }
 
   private choice<K extends ChoiceKey>(
@@ -703,62 +787,55 @@ export class HamsterSettingTab extends PluginSettingTab {
     desc: string,
     key: K,
     options: Record<HamsterSettings[K], string>,
-  ): void {
-    new Setting(this.containerEl)
-      .setName(name)
-      .setDesc(desc)
-      .addDropdown((dropdown) => {
+  ): Row {
+    return row(name, desc, (setting) =>
+      setting.addDropdown((dropdown) => {
         dropdown.addOptions(options);
         dropdown.setValue(this.deps.settings()[key]);
         dropdown.onChange((value) => {
           if (Object.hasOwn(options, value)) this.saveNow({ [key]: value });
         });
-      });
+      }),
+    );
   }
 
   /**
    * A path of this device's own. Saved as typed, and an emptied field as ''.
-   * Returns the way to change what the empty field shows.
+   * `changed` follows each edit; `drawn` is handed the field once it is drawn.
    */
   private localText(
     name: string,
     desc: string,
     key: 'nodePath' | 'runtimeDir',
-    placeholder: string,
-    changed?: () => void,
-  ): (placeholder: string) => void {
-    let show = (_text: string): void => undefined;
-    new Setting(this.containerEl)
-      .setName(name)
-      .setDesc(desc)
-      .addText((field) => {
+    placeholder: () => string,
+    { changed, drawn }: { changed?: () => void; drawn?: (field: TextComponent) => void } = {},
+  ): Row {
+    return row(name, desc, (setting) =>
+      setting.addText((field) => {
         field.setValue(this.deps.local()[key]);
-        field.setPlaceholder(placeholder);
+        field.setPlaceholder(placeholder());
         field.onChange((raw) => {
           this.deps.setLocal({ [key]: raw.trim() });
           changed?.();
         });
-        show = (text) => {
-          field.setPlaceholder(text);
-        };
-      });
-    return (text) => show(text);
+        drawn?.(field);
+      }),
+    );
   }
 
-  private microphone(): void {
-    const setting = new Setting(this.containerEl)
-      .setName('Microphone')
-      .setDesc('This device only. Applies to the next recording.');
-    setting.addDropdown((dropdown) => {
-      const saved = this.deps.local().micDeviceId;
-      dropdown.addOption('', 'System default');
-      if (saved !== '') dropdown.addOption(saved, 'Saved microphone');
-      dropdown.setValue(saved);
-      dropdown.onChange((value) => this.deps.setLocal({ micDeviceId: value }));
-      this.listMicrophones(dropdown, setting).catch((error: unknown) => {
-        console.error('Magical Hamster: could not list the microphones', error);
-      });
-    });
+  private microphone(): Row {
+    return row('Microphone', 'This device only. Applies to the next recording.', (setting) =>
+      setting.addDropdown((dropdown) => {
+        const saved = this.deps.local().micDeviceId;
+        dropdown.addOption('', 'System default');
+        if (saved !== '') dropdown.addOption(saved, 'Saved microphone');
+        dropdown.setValue(saved);
+        dropdown.onChange((value) => this.deps.setLocal({ micDeviceId: value }));
+        this.listMicrophones(dropdown, setting).catch((error: unknown) => {
+          console.error('Magical Hamster: could not list the microphones', error);
+        });
+      }),
+    );
   }
 
   private async listMicrophones(dropdown: DropdownComponent, setting: Setting): Promise<void> {

@@ -253,45 +253,41 @@ export function parseMiniMarkdown(markdown: string): MdBlock[] {
   return blocks;
 }
 
-function appendInline(doc: Document, parent: Node, nodes: MdInline[]): void {
+/* Elements are made with Obsidian's `createEl` on the element they go into, so in that element's
+   own document: a popout window has its own. The browser harness defines the same helpers
+   (dev/index.html). */
+function appendInline(doc: Document, parent: HTMLElement, nodes: MdInline[]): void {
   for (const node of nodes) {
     if (node.type === 'text') {
       parent.appendChild(doc.createTextNode(node.text));
     } else if (node.type === 'code') {
-      const code = doc.createElement('code');
-      code.appendChild(doc.createTextNode(node.text));
-      parent.appendChild(code);
+      parent.createEl('code').appendChild(doc.createTextNode(node.text));
     } else {
-      const el = doc.createElement(node.type === 'strong' ? 'strong' : 'em');
-      appendInline(doc, el, node.children);
-      parent.appendChild(el);
+      appendInline(doc, parent.createEl(node.type === 'strong' ? 'strong' : 'em'), node.children);
     }
   }
 }
 
-function blockNode(doc: Document, block: MdBlock): Node {
+const HEADINGS = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] as const;
+
+function appendBlock(doc: Document, parent: HTMLElement, block: MdBlock): void {
   if (block.type === 'paragraph') {
-    const p = doc.createElement('p');
-    appendInline(doc, p, block.children);
-    return p;
+    appendInline(doc, parent.createEl('p'), block.children);
+    return;
   }
   if (block.type === 'heading') {
-    const h = doc.createElement(`h${Math.min(6, Math.max(1, block.level))}`);
-    appendInline(doc, h, block.children);
-    return h;
+    appendInline(doc, parent.createEl(HEADINGS[Math.min(6, Math.max(1, block.level)) - 1]), block.children);
+    return;
   }
   if (block.type === 'code') {
-    const pre = doc.createElement('pre');
-    const code = doc.createElement('code');
-    code.appendChild(doc.createTextNode(block.text));
-    pre.appendChild(code);
-    return pre;
+    parent.createEl('pre').createEl('code').appendChild(doc.createTextNode(block.text));
+    return;
   }
-  return listNode(doc, block);
+  appendList(doc, parent, block);
 }
 
-function newList(doc: Document, ordered: boolean, start: number): HTMLElement {
-  const el = doc.createElement(ordered ? 'ol' : 'ul');
+function newList(parent: HTMLElement, ordered: boolean, start: number): HTMLElement {
+  const el = parent.createEl(ordered ? 'ol' : 'ul');
   if (ordered && start !== 1) el.setAttribute('start', String(start));
   return el;
 }
@@ -301,10 +297,10 @@ function newList(doc: Document, ordered: boolean, start: number): HTMLElement {
  * items drawn as more items of the one list would be counted with it: in a numbered list the
  * item after a nested bullet would show the wrong number, and a nested numbered item none.
  */
-function listNode(doc: Document, block: Extract<MdBlock, { type: 'list' }>): Node {
+function appendList(doc: Document, parent: HTMLElement, block: Extract<MdBlock, { type: 'list' }>): void {
   /* The list open at each level, outermost first, and the last item put in each. */
   const open: Array<{ el: HTMLElement; ordered: boolean; last: HTMLElement | null }> = [
-    { el: newList(doc, block.ordered, block.start), ordered: block.ordered, last: null },
+    { el: newList(parent, block.ordered, block.start), ordered: block.ordered, last: null },
   ];
   block.items.forEach((item, index) => {
     const mark = block.marks?.[index];
@@ -312,29 +308,24 @@ function listNode(doc: Document, block: Extract<MdBlock, { type: 'list' }>): Nod
     /* An item hangs under the one before it, at most one level down; the first under nothing. */
     const depth = index === 0 ? 0 : Math.min(block.depths?.[index] ?? 0, open.length);
     open.length = Math.min(open.length, depth + 1);
-    const parent = depth > 0 ? open[depth - 1]?.last : null;
+    const under = depth > 0 ? open[depth - 1]?.last : null;
     /* Deeper than any list open, or the other kind of list than the one open at this level. */
-    if (parent && (open.length === depth || open[depth]?.ordered !== ordered)) {
-      const el = newList(doc, ordered, mark ?? 1);
-      parent.appendChild(el);
-      open[depth] = { el, ordered, last: null };
+    if (under && (open.length === depth || open[depth]?.ordered !== ordered)) {
+      open[depth] = { el: newList(under, ordered, mark ?? 1), ordered, last: null };
     }
     const list = open[open.length - 1];
-    const li = doc.createElement('li');
+    const li = list.el.createEl('li');
     appendInline(doc, li, item);
-    list.el.appendChild(li);
     list.last = li;
   });
-  return open[0].el;
 }
 
 /** Renders `markdown` into `el`, replacing what was there. Returns the cleanup that takes it out again. */
 export function renderMiniMarkdown(markdown: string, el: HTMLElement): () => void {
   const doc = el.ownerDocument;
-  const root = doc.createElement('div');
-  root.className = 'mh-md';
-  for (const block of parseMiniMarkdown(markdown)) root.appendChild(blockNode(doc, block));
-  el.replaceChildren(root);
+  el.replaceChildren();
+  const root = el.createDiv({ cls: 'mh-md' });
+  for (const block of parseMiniMarkdown(markdown)) appendBlock(doc, root, block);
   return () => {
     if (root.parentNode === el) el.removeChild(root);
   };

@@ -20,6 +20,7 @@ import {
   summaryMessages,
   windowNotesMessages,
 } from './prompts.ts';
+import { asError } from '../util/errors.ts';
 
 export interface GenSettings {
   model: string;
@@ -146,7 +147,7 @@ export async function generateResult(
           },
           (error: unknown) => {
             signal.removeEventListener('abort', onAbort);
-            reject(error);
+            reject(asError(error));
           },
         );
       })

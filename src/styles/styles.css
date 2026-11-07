@@ -18,44 +18,13 @@
  * element itself, which carries none.
  * ------------------------------------------------------------------------ */
 
-/* @tailwind, @source, @custom-variant and @theme are Tailwind's own directives, compiled away by
-   the build: the released styles.css has none. A CSS linter that does not know Tailwind reports
-   them as unknown at-rules. */
-
 @import "tailwindcss/theme.css";
 @import "./reset.css";
 @import "./theme.css";
 @import "./markdown.css";
-
-:where(.mh-root) {
-  @tailwind utilities;
-}
-
-@source "../";
-
-@custom-variant dark (&:where(.mh-root.dark, .mh-root.dark *));
-
-/* Semantic colours. The values here only make Tailwind generate the utilities
-   (bg-surface, text-muted...); the real values are set on `.mh-root` in
-   theme.css, from the reader's Obsidian theme. */
-@theme {
-  /* Obsidian's own monospace font (the `font-mono` utility), not Tailwind's default stack. */
-  --font-mono: var(--font-monospace, SFMono-Regular, Menlo, monospace);
-  --color-surface: #ffffff;
-  --color-surface-alt: #f6f6f6;
-  --color-ink: #222222;
-  --color-muted: #5c5c5c;
-  --color-faint: #ababab;
-  --color-brand: #7852ee;
-  --color-brand-hover: #8a6cf0;
-  --color-on-brand: #ffffff;
-  --color-line: #e0e0e0;
-  --color-hover: #f2f2f2;
-  --color-chip: #ece6fd;
-  --color-danger: #e93147;
-  --color-ok: #08b94e;
-  --color-warn: #ec7500;
-}
+/* Tailwind's directives (the scoped utilities, the sources, the dark variant, the theme) go here:
+   the build adds them from src/styles/tailwind.ts, so that no .css file holds an at-rule a CSS
+   linter does not know. */
 
 .mh-root { color-scheme: light; }
 .mh-root.dark { color-scheme: dark; }

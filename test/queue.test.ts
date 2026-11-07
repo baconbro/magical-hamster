@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { isOllamaError } from '../src/llm/ollama.ts';
 import { LlmQueue } from '../src/llm/queue.ts';
 import type { Priority } from '../src/types.ts';
+import { isAborted } from '../src/util/errors.ts';
 
 const MODEL = 'gemma4:12b';
 
@@ -256,6 +257,23 @@ test('a task that throws rejects its caller and does not block the queue', async
   await assert.rejects(threw, (error) => error === syncBoom);
   assert.equal(await after, 'still running');
   assert.equal(queue.busy(MODEL), false);
+});
+
+test('a task that throws something other than an Error rejects with an Error that keeps it', async () => {
+  const queue = new LlmQueue();
+  const thrown = { kind: 'aborted', model: MODEL };
+  const threw = queue.run(MODEL, 'interactive', null, () => {
+    throw thrown;
+  });
+  await assert.rejects(threw, (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.equal(error.cause, thrown);
+    // What callers read off a rejection is still there.
+    assert.equal(isAborted(error), true);
+    assert.equal((error as Error & { model?: unknown }).model, MODEL);
+    assert.equal(error.message, '');
+    return true;
+  });
 });
 
 test('cancelAll aborts what runs and rejects what waits', async () => {

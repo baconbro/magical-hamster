@@ -265,6 +265,36 @@
     </div>
 
     <script>
+      /* Obsidian's DOM helpers, which the plugin and the harness build their elements with:
+         createEl, createDiv and createSpan on every node (the element is made in that node's
+         document, then appended to it) and as globals (made in this page, appended to `parent`
+         if one is given). Only the options used here: cls, text, attr, parent, prepend. Defined
+         before the module below runs, as Obsidian has them before a plugin loads. */
+      (() => {
+        const make = (doc, tag, o, callback) => {
+          const info = typeof o === 'string' ? { cls: o } : o || {};
+          const el = doc.createElement(tag);
+          if (info.cls) el.className = [].concat(info.cls).join(' ');
+          if (info.text) el.append(info.text);
+          for (const [name, value] of Object.entries(info.attr || {})) {
+            if (value !== null) el.setAttribute(name, String(value));
+          }
+          if (callback) callback(el);
+          if (info.parent) info.parent.insertBefore(el, info.prepend ? info.parent.firstChild : null);
+          return el;
+        };
+        const into = (node, o) => ({ ...(typeof o === 'string' ? { cls: o } : o), parent: node });
+        Node.prototype.createEl = function (tag, o, callback) {
+          return make(this.ownerDocument || this, tag, into(this, o), callback);
+        };
+        Node.prototype.createDiv = function (o, callback) { return this.createEl('div', o, callback); };
+        Node.prototype.createSpan = function (o, callback) { return this.createEl('span', o, callback); };
+        window.createEl = (tag, o, callback) => make(document, tag, o, callback);
+        window.createDiv = (o, callback) => make(document, 'div', o, callback);
+        window.createSpan = (o, callback) => make(document, 'span', o, callback);
+      })();
+    </script>
+    <script>
       /* Obsidian's light/dark state lives in a class on <body>; the plugin reads it. */
       const LIGHT = new Set(['t-light', 't-sepia']);
       const sel = document.getElementById('theme');

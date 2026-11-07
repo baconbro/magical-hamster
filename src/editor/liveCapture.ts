@@ -47,8 +47,13 @@ export function liveCaptureExtension(opts: LiveCaptureOptions): Extension {
     const latest = pending;
     pending = null;
     if (!latest) return;
-    const deliver = opts.isDaily(latest.path) ? opts.onDaily : opts.onNote;
-    if (!deliver) return;
+    const daily = opts.isDaily(latest.path);
+    if (!daily && !opts.onNote) return;
+    // Called on `opts`, not taken off it: a callback written as a method keeps its `this`.
+    const deliver = (update: DailyUpdate): void => {
+      if (daily) opts.onDaily(update);
+      else opts.onNote?.(update);
+    };
     try {
       deliver({
         path: latest.path,

@@ -45,22 +45,15 @@ const bar = document.getElementById('harness-bar');
    so the companion can be watched while its regions are written. */
 function createViewer() {
   let path: string | null = null;
-  const pane = document.createElement('div');
-  pane.id = 'note-view';
-  const head = document.createElement('div');
-  head.className = 'host-tabbar';
-  const name = document.createElement('span');
-  name.id = 'note-view-name';
-  const close = document.createElement('button');
-  close.textContent = '×';
+  const pane = createDiv({ attr: { id: 'note-view' } });
+  const head = pane.createDiv({ cls: 'host-tabbar' });
+  const name = head.createSpan({ attr: { id: 'note-view-name' } });
+  const close = head.createEl('button', { text: '×' });
   close.addEventListener('click', () => {
     path = null;
     pane.classList.remove('open');
   });
-  head.append(name, close);
-  const body = document.createElement('pre');
-  body.id = 'note-view-text';
-  pane.append(head, body);
+  const body = pane.createEl('pre', { attr: { id: 'note-view-text' } });
   document.querySelector('.host-main')?.append(pane);
   return {
     show(next: string, text: string | null) {
@@ -75,10 +68,7 @@ function createViewer() {
 }
 
 function toast(message: string): void {
-  const el = document.createElement('div');
-  el.className = 'harness-toast';
-  el.textContent = message;
-  document.body.append(el);
+  const el = document.body.createDiv({ cls: 'harness-toast', text: message });
   window.setTimeout(() => el.remove(), 6000);
 }
 
@@ -89,12 +79,18 @@ let scenarios: Record<string, () => void> = {};
 let debug: Record<string, unknown> = {};
 
 if (params.get('mode') === 'fake' || params.has('scenario')) {
-  const fake = createFakeSession({ dailyTextarea: textarea });
+  const fake = createFakeSession({ dailyTextarea: textarea, toast });
   ({ store, controller, host, scenarios } = fake);
 } else {
   const real = await createRealSession({ dailyTextarea: textarea, params, viewer: createViewer(), toast });
   ({ store, controller, host } = real);
-  debug = { session: real.session, notes: real.notes, say: real.say, settings: real.settings, callLog: real.callLog };
+  debug = {
+    session: real.session,
+    notes: real.notes,
+    say: (text: string) => real.say(text),
+    settings: () => real.settings(),
+    callLog: real.callLog,
+  };
 }
 
 const props: AppProps = { store, controller, host };
@@ -113,24 +109,13 @@ store.subscribe((state, prev) => {
 window.addEventListener('hamster-harness-theme', () => syncAllThemes());
 
 if (bar) {
-  const label = document.createElement('span');
   const keys = Object.keys(scenarios);
-  label.textContent = keys.length > 0 ? 'State' : 'Real session on fake hosts';
-  bar.appendChild(label);
+  bar.createSpan({ text: keys.length > 0 ? 'State' : 'Real session on fake hosts' });
   for (const key of keys) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = key;
-    button.dataset.scenario = key;
+    const button = bar.createEl('button', { text: key, attr: { type: 'button', 'data-scenario': key } });
     button.addEventListener('click', () => scenarios[key]?.());
-    bar.appendChild(button);
   }
-  if (keys.length === 0) {
-    const link = document.createElement('a');
-    link.href = '?mode=fake';
-    link.textContent = 'scripted states';
-    bar.appendChild(link);
-  }
+  if (keys.length === 0) bar.createEl('a', { text: 'scripted states', attr: { href: '?mode=fake' } });
 }
 
 const TAB_IDS: readonly TabId[] = ['meetings', 'notes', 'summary', 'transcript', 'ask', 'stats', 'debug'];

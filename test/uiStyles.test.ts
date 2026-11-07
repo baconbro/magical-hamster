@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { TAILWIND_DIRECTIVES, withDirectives } from '../src/styles/tailwind.ts';
 
 /* Obsidian loads the plugin's stylesheet for the whole app. A rule that does not
    name the plugin's own root restyles notes, other plugins and Obsidian itself,
@@ -8,8 +9,15 @@ import { test } from 'node:test';
 
 const STYLES = new URL('../src/styles/', import.meta.url);
 
+const withoutComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, '');
+
 function source(name: string): string {
-  return readFileSync(new URL(name, STYLES), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  return withoutComments(readFileSync(new URL(name, STYLES), 'utf8'));
+}
+
+/** styles.css as Tailwind reads it: with the directives the build adds (src/styles/tailwind.ts). */
+function built(): string {
+  return withoutComments(withDirectives(readFileSync(new URL('styles.css', STYLES), 'utf8')));
 }
 
 interface Rule {
@@ -42,7 +50,7 @@ function rulesOf(css: string): Rule[] {
 }
 
 test('styles: the Tailwind utilities are generated inside the plugin root, never for the whole app', () => {
-  const css = source('styles.css');
+  const css = built();
   /* Either of these emits `.hidden`, `.container`, `.table`... as bare classes. */
   assert.doesNotMatch(css, /@import\s+["']tailwindcss(\/utilities(\.css)?)?["']/);
 
@@ -86,4 +94,23 @@ test('styles: the prose rules cover what the Markdown renderer builds', () => {
   assert.doesNotMatch(css, /data-depth/);
   /* Nothing for a link or a quote: the renderer builds neither, and a rule would suggest it does. */
   assert.doesNotMatch(css, /:where\((a|blockquote)\)/);
+});
+
+test('styles: no .css file holds a Tailwind directive, which CSS linters report as unknown at-rules', () => {
+  const files = readdirSync(STYLES).filter((name) => name.endsWith('.css'));
+  assert.ok(files.includes('styles.css'));
+  for (const name of files) {
+    assert.doesNotMatch(source(name), /@(?:tailwind|source|custom-variant|theme|utility|variant|plugin|config|apply)\b/, name);
+  }
+});
+
+test('styles: the build adds the directives right after the @import lines, where they belong', () => {
+  const css = withDirectives('@import "a.css";\n@import "b.css";\n.mh-root .x { color: red; }\n');
+  const lines = css.split('\n');
+  assert.equal(lines[0], '@import "a.css";');
+  assert.equal(lines[1], '@import "b.css";');
+  assert.ok(css.indexOf('@tailwind utilities') > css.indexOf('@import "b.css"'));
+  assert.ok(css.indexOf('@tailwind utilities') < css.indexOf('.mh-root .x'));
+  assert.ok(css.includes(TAILWIND_DIRECTIVES));
+  assert.throws(() => withDirectives('.mh-root .x { color: red; }'), /no @import/);
 });

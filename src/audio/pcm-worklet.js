@@ -4,7 +4,8 @@
 
    micCapture.ts loads this file as text through a Blob URL, so it cannot
    import anything: the conversion below repeats floatToInt16 from
-   src/stt/protocol.ts and must stay in step with it. */
+   src/stt/protocol.ts and must stay in step with it. The names the worklet
+   scope provides are declared for the type checker in pcm-worklet-scope.d.ts. */
 
 const QUANTUM_FRAMES = 128;
 const SILENCE = new Float32Array(QUANTUM_FRAMES);
@@ -19,6 +20,7 @@ class HamsterPcmProcessor extends AudioWorkletProcessor {
     this.peak = 0;
   }
 
+  /** @param {Float32Array[][]} inputs Per input, one array per channel. */
   process(inputs) {
     // An input has no channel while its source is not producing (a muted
     // track, a node being disconnected). Counting those quanta as silence

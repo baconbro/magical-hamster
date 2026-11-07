@@ -5,6 +5,7 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { tailwindDirectives } from './src/styles/tailwind.ts'
 
 const at = (p: string) => fileURLToPath(new URL(p, import.meta.url))
 
@@ -20,7 +21,8 @@ const NOTICES_BANNER = `/*!\n${notices.trimEnd()}\n*/`
    Obsidian provides `obsidian`, `electron` and CodeMirror itself; Node built-ins
    are resolved by Electron at run time (the plugin is desktop-only). */
 export default defineConfig(({ mode }) => ({
-  plugins: [react(), tailwindcss()],
+  // tailwindDirectives first: it adds Tailwind's directives to styles.css before Tailwind reads it.
+  plugins: [react(), tailwindDirectives(), tailwindcss()],
   /* React picks its build from `process.env.NODE_ENV`, and nothing substitutes
      that in a CommonJS library build. Without this the bundle carries React's
      development copy as well as the production one, and the development copy

@@ -2,6 +2,7 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { tailwindDirectives } from './src/styles/tailwind.ts'
 
 const at = (p: string) => fileURLToPath(new URL(p, import.meta.url))
 
@@ -10,7 +11,8 @@ const at = (p: string) => fileURLToPath(new URL(p, import.meta.url))
    plugin bundle. */
 export default defineConfig({
   root: at('./dev'),
-  plugins: [react(), tailwindcss()],
+  // tailwindDirectives first: it adds Tailwind's directives to styles.css before Tailwind reads it.
+  plugins: [react(), tailwindDirectives(), tailwindcss()],
   resolve: {
     alias: [{ find: /^obsidian$/, replacement: at('./dev/obsidian-stub.ts') }],
   },

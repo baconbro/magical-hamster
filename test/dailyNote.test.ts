@@ -95,6 +95,8 @@ export class PluginSettingTab {
     this.containerEl = { rows: [], empty() { this.rows.length = 0; } };
   }
   hide() {}
+  // Obsidian's redraws the open tab from the definitions; the tests draw again with display().
+  update() {}
 }
 export class FileSystemAdapter {
   constructor(basePath) { this.basePath = basePath; }
@@ -1957,6 +1959,23 @@ describe('settings tab: the Ollama address', () => {
     }
   });
 
+  it('puts an address being typed into effect when a sync redraws the tab, as display() would', () => {
+    const t = open();
+    try {
+      t.field.type('http://192.168.1.50:11434');
+      assert.deepEqual(t.saved, []);
+      // data.json changed on disk: Obsidian calls update(), then draws the rows again.
+      t.tab.update();
+      assert.deepEqual(t.saved, [{ ollamaUrl: 'http://192.168.1.50:11434' }], 'saved before the rows are drawn again');
+      t.tab.display();
+      const rows = (t.tab.containerEl as unknown as { rows: Row[] }).rows;
+      const redrawn = rows.find((candidate) => candidate.name === 'Ollama address');
+      assert.equal(redrawn?.controls[0].value, 'http://192.168.1.50:11434', 'the field shows the address in effect');
+    } finally {
+      t.close();
+    }
+  });
+
   it('warns under the field as soon as the address is not this computer', () => {
     const t = open();
     try {
@@ -2095,6 +2114,96 @@ describe('settings tab: what the descriptions say', () => {
       assert.match(desc, /[.)]$/, name);
       assert.doesNotMatch(desc, /!/, name);
     }
+  });
+});
+
+describe('settings tab: the definitions Obsidian searches and draws', () => {
+  interface Row {
+    name: string;
+    desc: string;
+    controls: Array<{ value: unknown; placeholder: string | undefined; type(value: string): void }>;
+  }
+  const plugin = {} as ConstructorParameters<typeof HamsterSettingTab>[1];
+
+  it('lists every row the tab draws, under its heading, without reading or saving anything', () => {
+    const used: string[] = [];
+    const use = <T>(what: string, value: T): T => {
+      used.push(what);
+      return value;
+    };
+    const tab = new HamsterSettingTab(new FakeApp().app, plugin, {
+      settings: () => use('settings', DEFAULT_SETTINGS),
+      updateSettings: async () => use('updateSettings', undefined),
+      local: () => use('local', DEFAULT_LOCAL),
+      setLocal: () => use('setLocal', undefined),
+      defaultRuntimeDir: () => use('defaultRuntimeDir', '/runtime'),
+      runtimeDir: () => use('runtimeDir', '/runtime'),
+      readRuntime: () => use('readRuntime', null),
+    });
+    const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
+
+    // Obsidian asks for the list when the plugin loads, to index it for its search.
+    const definitions = tab.getSettingDefinitions();
+    assert.equal(used.join(', '), '', 'nothing is read, saved or asked of the runtime');
+    assert.equal(rows.length, 0, 'and nothing is drawn');
+
+    // Obsidian tells the groups apart by their headings, and the rows of a group by their names.
+    const headings = definitions.map((group) => group.heading);
+    assert.equal(new Set(headings).size, headings.length);
+    for (const group of definitions) {
+      assert.equal(group.type, 'group');
+      assert.notEqual(group.heading.trim(), '');
+      const names = group.items.map((item) => item.name);
+      assert.equal(new Set(names).size, names.length, group.heading);
+      for (const item of group.items) {
+        assert.notEqual(item.name.trim(), '', group.heading);
+        assert.notEqual(item.desc.trim(), '', item.name);
+      }
+    }
+
+    tab.display();
+    assert.deepEqual(
+      rows.map((row) => row.name),
+      definitions.flatMap((group) => [group.heading, ...group.items.map((item) => item.name)]),
+      'the tab draws these rows, each under its heading, and nothing else',
+    );
+    assert.ok(used.includes('readRuntime'), 'what a row shows is read when it is drawn');
+  });
+
+  it('draws the list it gave at load with what is true when the tab opens', () => {
+    let settings: HamsterSettings = DEFAULT_SETTINGS;
+    let local = { ...DEFAULT_LOCAL };
+    const tab = new HamsterSettingTab(new FakeApp().app, plugin, {
+      settings: () => settings,
+      updateSettings: async () => undefined,
+      local: () => local,
+      setLocal: (patch) => {
+        local = { ...local, ...patch };
+      },
+      defaultRuntimeDir: () => '/runtime',
+      runtimeDir: () => local.runtimeDir || '/runtime',
+      readRuntime: (dir) => (dir === '/fast' ? { model: 'fast model', node: '/fast/node' } : null),
+    });
+    // As Obsidian does: the list it is given when the plugin loads is the one it draws every time.
+    const loaded = tab.getSettingDefinitions();
+    tab.getSettingDefinitions = () => loaded;
+    const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
+    const row = (name: string): Row => {
+      const found = rows.find((candidate) => candidate.name === name);
+      assert.ok(found, `no setting named ${name}`);
+      return found;
+    };
+
+    tab.display();
+    settings = { ...settings, llmModel: 'qwen3:8b' };
+    tab.hide();
+    tab.display();
+    assert.equal(row('Model').controls[0].value, 'qwen3:8b');
+
+    // The runtime folder updates the rows drawn last, not the ones drawn the first time.
+    row('Runtime folder').controls[0].type('/fast');
+    assert.equal(row('Speech runtime').desc, 'Installed: fast model');
+    assert.equal(row('Node path').controls[0].placeholder, '/fast/node');
   });
 });
 

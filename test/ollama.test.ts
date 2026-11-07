@@ -1026,8 +1026,30 @@ test('isOllamaError: narrows by kind', () => {
   assert.equal(new OllamaError('protocol', 'x').model, null);
 });
 
-test('the default clock and timeouts work without options', async () => {
+test('the default timeouts work on real timers', async () => {
+  const clock: Clock = {
+    now: () => Date.now(),
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
+    setInterval: (fn, ms) => setInterval(fn, ms),
+    clearInterval: (handle) => clearInterval(handle as NodeJS.Timeout),
+  };
   const { fetch } = fakeFetch(() => ok(ndjson([token('ok'), DONE])));
-  const client = createOllamaClient({ baseUrl: BASE, fetch });
+  const client = createOllamaClient({ baseUrl: BASE, fetch, clock });
   assert.equal((await client.chatStream(REQ)).text, 'ok');
+});
+
+test('without a fetch, the client uses the window’s', async (t) => {
+  const { fetch, calls } = fakeFetch(() => ok(ndjson([token('ok'), DONE])));
+  const globals = globalThis as Record<string, unknown>;
+  const saved = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  globals.window = { fetch };
+  t.after(() => {
+    if (saved) Object.defineProperty(globalThis, 'window', saved);
+    else delete globals.window;
+  });
+  const client = createOllamaClient({ baseUrl: BASE, clock: manualClock() });
+  assert.equal((await client.chatStream(REQ)).text, 'ok');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, `${BASE}/api/chat`);
 });

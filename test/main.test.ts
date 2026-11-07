@@ -293,6 +293,8 @@ describe('main: the Markdown renderer handed to the sidebar', () => {
       removeChild(child: Node): Node;
       replaceChildren(...next: Node[]): void;
       setAttribute(): void;
+      createEl(tag: string, o?: { cls?: string; text?: string }): Node;
+      createDiv(o?: { cls?: string; text?: string }): Node;
     }
     const node = (): Node => {
       const self: Node = {
@@ -316,6 +318,14 @@ describe('main: the Markdown renderer handed to the sidebar', () => {
           for (const child of next) self.appendChild(child);
         },
         setAttribute: () => undefined,
+        /* Obsidian's helpers: made through the same document, then appended. */
+        createEl(tag, o = {}) {
+          const child = doc.createElement(tag);
+          child.className = o.cls ?? '';
+          if (o.text) child.appendChild(doc.createTextNode(o.text));
+          return self.appendChild(child);
+        },
+        createDiv: (o) => self.createEl('div', o),
       };
       return self;
     };

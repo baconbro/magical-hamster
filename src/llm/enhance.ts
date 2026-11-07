@@ -27,6 +27,7 @@ import {
 } from './prompts.ts';
 import type { EnhancePromptItem } from './prompts.ts';
 import { taskMark } from '../util/tasks.ts';
+import { asError } from '../util/errors.ts';
 
 export interface EnhanceSettings {
   model: string;
@@ -393,7 +394,7 @@ function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
       },
       (error: unknown) => {
         signal.removeEventListener('abort', onAbort);
-        reject(error);
+        reject(asError(error));
       },
     );
   });

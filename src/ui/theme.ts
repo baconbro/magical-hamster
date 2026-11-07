@@ -13,9 +13,8 @@ function luminance([r, g, b]: [number, number, number]): number {
 /** Reads a CSS colour through a real element inside <body>, where Obsidian defines its variables. */
 function readColor(value: string): [number, number, number] | null {
   // In the page for one synchronous read and out again: it is never drawn.
-  const probe = document.createElement('span');
+  const probe = document.body.createSpan();
   probe.style.color = value;
-  document.body.appendChild(probe);
   const parts = getComputedStyle(probe).color.match(/[\d.]+/g);
   probe.remove();
   if (!parts || parts.length < 3) return null;

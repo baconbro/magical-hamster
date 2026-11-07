@@ -142,33 +142,21 @@ class ScriptedSource extends FakeTranscriptSource {
 /** The first-write confirmation, as a small page dialog (a native confirm() would block automation). */
 function confirmInPage(preview: FirstWritePreview): Promise<boolean> {
   return new Promise((resolve) => {
-    const veil = document.createElement('div');
-    veil.id = 'confirm-write';
-    const box = document.createElement('div');
-    box.className = 'confirm-box';
     const text = confirmWriteText(preview);
-    const title = document.createElement('h3');
-    title.textContent = text.title;
-    const body = document.createElement('p');
-    body.textContent = text.intro;
-    const detail = document.createElement('pre');
-    detail.textContent = text.rows.map((row) => `${row.label}: ${row.value}`).join('\n');
-    const row = document.createElement('div');
-    row.className = 'confirm-row';
+    const veil = createDiv({ attr: { id: 'confirm-write' } });
+    const box = veil.createDiv({ cls: 'confirm-box' });
+    box.createEl('h3', { text: text.title });
+    box.createEl('p', { text: text.intro });
+    box.createEl('pre', { text: text.rows.map((row) => `${row.label}: ${row.value}`).join('\n') });
+    const row = box.createDiv({ cls: 'confirm-row' });
     const finish = (answer: boolean) => {
       veil.remove();
       resolve(answer);
     };
-    const cancel = document.createElement('button');
-    cancel.textContent = 'Cancel';
+    const cancel = row.createEl('button', { text: 'Cancel' });
     cancel.addEventListener('click', () => finish(false));
-    const ok = document.createElement('button');
-    ok.textContent = text.button;
-    ok.dataset.action = 'confirm-create';
+    const ok = row.createEl('button', { text: text.button, attr: { 'data-action': 'confirm-create' } });
     ok.addEventListener('click', () => finish(true));
-    row.append(cancel, ok);
-    box.append(title, body, detail, row);
-    veil.append(box);
     document.body.append(veil);
   });
 }

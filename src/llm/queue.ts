@@ -1,5 +1,6 @@
 import type { LlmScheduler, Priority } from '../types.ts';
 import { OllamaError } from './ollama.ts';
+import { asError } from '../util/errors.ts';
 
 interface Job {
   priority: Priority;
@@ -141,7 +142,7 @@ export class LlmQueue implements LlmScheduler {
     try {
       work = Promise.resolve(job.start(job.controller.signal));
     } catch (error) {
-      work = Promise.reject(error);
+      work = Promise.reject(asError(error));
     }
 
     const settle = (deliver: () => void): void => {
