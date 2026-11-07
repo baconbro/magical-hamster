@@ -110,6 +110,26 @@ function liveStream() {
   };
 }
 
+/** `count` copies of `chunk`, handed out one read at a time; it records how far the client read. */
+function pullStream(chunk: Uint8Array, count: number) {
+  let pulled = 0;
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (pulled >= count) {
+        controller.close();
+        return;
+      }
+      pulled += 1;
+      controller.enqueue(chunk.slice());
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  return { stream, pulled: () => pulled, cancelled: () => cancelled };
+}
+
 function ndjson(objects: unknown[], trailingNewline = true): string {
   const text = objects.map((o) => JSON.stringify(o)).join('\n');
   return trailingNewline ? `${text}\n` : text;
@@ -772,6 +792,44 @@ test('chatStream: a stream that ends without done is a protocol error', async ()
   );
 });
 
+test('chatStream: a stream line that never ends is a protocol error, read no further than 1 MB', async () => {
+  // 2 MB without a newline, 64 KB at a time.
+  const body = pullStream(encoder.encode('x'.repeat(64 << 10)), 32);
+  const { fetch } = fakeFetch(() => ok(body.stream));
+  const clock = manualClock();
+  const client = createOllamaClient({ baseUrl: BASE, fetch, clock });
+  const error = await rejection(client.chatStream(REQ), 'protocol');
+  assert.match(error.message, /too long/);
+  await settle();
+  assert.ok(body.pulled() < 32, `stopped after ${body.pulled()} chunks`);
+  assert.equal(body.cancelled(), true);
+  assert.equal(clock.pending(), 0);
+
+  // The bound is on one line, not on the answer: many short lines can add up to more.
+  const lines = Array.from({ length: 20_000 }, () => token('x'.repeat(50)));
+  const long = ndjson([...lines, DONE]);
+  assert.ok(encoder.encode(long).length > 2 << 20);
+  const { fetch: fetchLong } = fakeFetch(() => ok(long));
+  const result = await createOllamaClient({ baseUrl: BASE, fetch: fetchLong, clock: manualClock() }).chatStream(REQ);
+  assert.equal(result.text.length, 20_000 * 50);
+});
+
+test('an error body is read up to 64 KB and no further', async () => {
+  // A 1 MB 404 page: its first words are all the message shows.
+  const body = pullStream(encoder.encode('Not found here. '.repeat(4096)), 16);
+  const { fetch } = fakeFetch(() => new Response(body.stream, { status: 404 }));
+  const clock = manualClock();
+  const client = createOllamaClient({ baseUrl: BASE, fetch, clock });
+  const error = await rejection(client.chatStream(REQ), 'http');
+  assert.equal(error.status, 404);
+  assert.match(error.message, /Not found here/);
+  assert.ok(error.message.length < 70_000);
+  await settle();
+  assert.ok(body.pulled() < 16, `stopped after ${body.pulled()} chunks`);
+  assert.equal(body.cancelled(), true);
+  assert.equal(clock.pending(), 0);
+});
+
 test('chatStream: a connection lost mid-stream is unreachable', async () => {
   const body = liveStream();
   const { fetch } = fakeFetch(() => ok(body.stream));
@@ -875,6 +933,20 @@ test('embed: a wrong number of vectors is a protocol error', async () => {
   const ragged = fakeFetch(() => jsonResponse({ embeddings: [[1, 2], 'oops'] }));
   const client3 = createOllamaClient({ baseUrl: BASE, fetch: ragged.fetch, clock: manualClock() });
   await rejection(client3.embed({ model: 'm', input: ['a', 'b'], numCtx: 2048 }), 'protocol');
+});
+
+test('embed: a body past 16 MB is a protocol error, read no further', async () => {
+  // 24 MB of digits, 1 MB at a time: never parsed, never held whole.
+  const body = pullStream(encoder.encode('1'.repeat(1 << 20)), 24);
+  const { fetch } = fakeFetch(() => ok(body.stream));
+  const clock = manualClock();
+  const client = createOllamaClient({ baseUrl: BASE, fetch, clock });
+  const error = await rejection(client.embed({ model: 'm', input: ['a'], numCtx: 2048 }), 'protocol');
+  assert.match(error.message, /too large/);
+  await settle();
+  assert.ok(body.pulled() < 24, `stopped after ${body.pulled()} chunks`);
+  assert.equal(body.cancelled(), true);
+  assert.equal(clock.pending(), 0);
 });
 
 test('embed: errors and aborts map like chat', async () => {
