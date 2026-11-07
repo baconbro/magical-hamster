@@ -13,6 +13,7 @@ import * as setup from '../scripts/setup-stt.mjs';
    runs it is in scripts.test.ts, on Apple Silicon only. */
 
 const REPO = fileURLToPath(new URL('..', import.meta.url));
+const PKG = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')) as { version: string };
 
 const scratch = mkdtempSync(join(tmpdir(), 'hamster-setup-stt-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -298,8 +299,15 @@ describe('writeFileAtomicSync', () => {
   });
 });
 
+describe('the version the setup records', () => {
+  it('is the repository’s own when run from it', () => {
+    assert.equal(setup.SETUP_VERSION, null, 'the marker the release build replaces');
+    assert.equal(setup.WORKER_VERSION, PKG.version);
+  });
+});
+
 describe('the release build of the script', () => {
-  it('exports the same helpers, with the same pins', async () => {
+  it('exports the same helpers, with the same pins, and the version it was built from', async () => {
     const out = join(scratchDir(), 'setup-speech.mjs');
     const build = spawnSync(process.execPath, [join(REPO, 'scripts', 'build-setup.mjs'), out], { encoding: 'utf8' });
     assert.equal(build.status, 0, build.stderr);
@@ -309,6 +317,8 @@ describe('the release build of the script', () => {
     assert.deepEqual(Object.keys(built).sort(), Object.keys(setup).sort());
     assert.deepEqual(built.KNOWN_SHA256, setup.KNOWN_SHA256);
     assert.equal(built.SHERPA_SPEC, setup.SHERPA_SPEC);
+    assert.equal(built.SETUP_VERSION, PKG.version);
+    assert.equal(built.WORKER_VERSION, PKG.version);
     assert.deepEqual(built.checksumFor(built.patternAsset(560), NO_OPTS), { sha256: PIN_560, source: 'the script' });
     assert.equal(existsSync(join(scratch, 'runtime.json')), false, 'importing it set nothing up');
   });

@@ -41,10 +41,10 @@ node_modules/sherpa-onnx-node/
 node_modules/sherpa-onnx-darwin-arm64/
 models/<model dir>/
 models/<model dir>.sha256
-runtime.json     { node, runtimeDir, model, modelDir, chunkMs, sha256, sherpaVersion, installedAt }
+runtime.json     { node, runtimeDir, model, modelDir, chunkMs, sha256, sherpaVersion, workerVersion, installedAt }
 ```
 
-`runtime.json` is written only after a self-test passed: the worker transcribed one of the model's test recordings, or, for a model that came without any, loaded the library and the model on a second of silence. The plugin reads it by itself and needs no setting for it: it runs the worker with `node` (unless its **Node path** setting names another one) and hands `modelDir` to `--model`. It takes the directory it found the file in as the runtime directory, whatever `runtimeDir` says, and follows a `modelDir` recorded inside that directory when the directory was moved. Only a runtime installed somewhere else than the directory above has to be named, in the **Runtime folder** setting.
+`runtime.json` is written only after a self-test passed: the worker transcribed one of the model's test recordings, or, for a model that came without any, loaded the library and the model on a second of silence. The plugin reads it by itself and needs no setting for it: it runs the worker with `node` (unless its **Node path** setting names another one) and hands `modelDir` to `--model`. It takes the directory it found the file in as the runtime directory, whatever `runtimeDir` says, and follows a `modelDir` recorded inside that directory when the directory was moved. Only a runtime installed somewhere else than the directory above has to be named, in the **Runtime folder** setting. `workerVersion` is the plugin version the setup script came from (null when the script was run from a checkout without one): the plugin compares its major.minor with its own version and asks for the setup to be run again after a plugin update.
 
 ## Frames (stdin)
 

@@ -48,6 +48,8 @@ import { fileURLToPath } from 'node:url';
 
 // The worker's files by name, in the release build (scripts/build-setup.mjs); null in the repository.
 const EMBEDDED_WORKER = null;
+// The plugin version the release build was made from (scripts/build-setup.mjs); null in the repository.
+const SETUP_VERSION = null;
 const COMMAND = EMBEDDED_WORKER ? 'node setup-speech.mjs' : 'pnpm setup:stt';
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_RUNTIME = join(homedir(), 'Library', 'Application Support', 'magical-hamster');
@@ -92,6 +94,16 @@ const KNOWN_SHA256 = Object.fromEntries(
     [1120, 'adbdd5e9fef87300c37cebfcfc4f1ebe56845c860c8a760af0a1dd65ce9beed3'],
   ].map(([chunkMs, sha256]) => [assetName(chunkMs), sha256]),
 );
+
+/* The plugin version this setup belongs to, recorded in runtime.json so the
+   plugin can tell a runtime set up for an older release. In the repository it
+   is read from package.json; a copy of the unbuilt script elsewhere has none. */
+const WORKER_VERSION = SETUP_VERSION ?? versionOfRepo();
+
+function versionOfRepo() {
+  const pkg = readJson(join(REPO, 'package.json'));
+  return pkg?.name === 'magical-hamster' && typeof pkg.version === 'string' ? pkg.version : null;
+}
 
 /** What `fail` throws: a message for the user, then exit code 1. */
 class SetupStop extends Error {
@@ -857,6 +869,7 @@ async function main() {
       chunkMs,
       sha256: dryRun ? null : recordedSha256(modelsDir, model),
       sherpaVersion: dryRun ? null : installedSherpa(runtime).version,
+      workerVersion: WORKER_VERSION,
       installedAt: new Date().toISOString(),
     };
     if (dryRun) {
@@ -889,9 +902,11 @@ export {
   MODEL_DATE,
   MODEL_PREFIX,
   RUNTIME_NAME,
+  SETUP_VERSION,
   SHERPA_SPEC,
   SHERPA_VERSION,
   SetupStop,
+  WORKER_VERSION,
   assetName,
   checksumFor,
   curlArgs,

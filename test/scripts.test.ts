@@ -13,6 +13,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO = fileURLToPath(new URL('..', import.meta.url));
 const script = (name: string): string => join(REPO, 'scripts', name);
+const VERSION = (JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')) as { version: string }).version;
 
 const scratch = mkdtempSync(join(tmpdir(), 'hamster-scripts-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -73,6 +74,13 @@ describe('setup-speech.mjs, the speech setup of a release', () => {
     const run = spawnSync(process.execPath, [build(), '--help'], { encoding: 'utf8', cwd: tmpdir() });
     assert.equal(run.status, 0, run.stderr);
     assert.match(run.stdout, /^Usage: node setup-speech\.mjs /);
+  });
+
+  it('carries the version of the plugin it was built with, once', () => {
+    const text = readFileSync(build(), 'utf8');
+    const stamped = text.match(/^const SETUP_VERSION = .*$/gm) ?? [];
+    assert.deepEqual(stamped, [`const SETUP_VERSION = ${JSON.stringify(VERSION)};`]);
+    assert.match(VERSION, /^\d+\.\d+\.\d+/);
   });
 
   it(
@@ -541,6 +549,7 @@ describe(
       assert.equal(record.model, MODEL);
       assert.equal(record.chunkMs, 560);
       assert.equal(record.sha256, sha256Of(noRecordings), 'recorded even when it was not checked');
+      assert.equal(record.workerVersion, VERSION);
       assert.equal(record.sherpaVersion, '1.13.8');
       assert.equal(existsSync(join(runtime, '.self-test-silence.wav')), false);
       assert.deepEqual(readdirSync(join(runtime, 'models')).sort(), [MODEL, `${MODEL}.sha256`]);

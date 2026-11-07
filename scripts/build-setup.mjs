@@ -8,11 +8,14 @@ import { fileURLToPath } from 'node:url';
 
 // Another path as the first argument: the tests build it elsewhere.
 const OUT = process.argv[2] || 'dist/setup-speech.mjs';
-const MARKER = 'const EMBEDDED_WORKER = null;';
+const WORKER_MARKER = 'const EMBEDDED_WORKER = null;';
+const VERSION_MARKER = 'const SETUP_VERSION = null;';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const source = readFileSync(join(REPO, 'scripts', 'setup-stt.mjs'), 'utf8');
-if (source.split(MARKER).length !== 2) throw new Error(`scripts/setup-stt.mjs must hold "${MARKER}" exactly once`);
+let source = readFileSync(join(REPO, 'scripts', 'setup-stt.mjs'), 'utf8');
+for (const marker of [WORKER_MARKER, VERSION_MARKER]) {
+  if (source.split(marker).length !== 2) throw new Error(`scripts/setup-stt.mjs must hold "${marker}" exactly once`);
+}
 
 const files = {};
 for (const name of readdirSync(join(REPO, 'stt')).filter((file) => file.endsWith('.cjs')).sort()) {
@@ -20,7 +23,13 @@ for (const name of readdirSync(join(REPO, 'stt')).filter((file) => file.endsWith
 }
 if (!files['worker.cjs']) throw new Error('stt/worker.cjs is missing');
 
+// The version the plugin will compare with: the one this build is released as.
+const pkg = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8'));
+if (typeof pkg.version !== 'string' || !pkg.version) throw new Error('package.json has no version');
+
 /* A function, not a string: String.replace reads `$&` and `$1` in a replacement
    string, and the worker's source is free to contain them. */
-writeFileSync(OUT, source.replace(MARKER, () => `const EMBEDDED_WORKER = ${JSON.stringify(files)};`));
-console.log(`${OUT}: the speech setup, with ${Object.keys(files).join(', ')}`);
+source = source.replace(WORKER_MARKER, () => `const EMBEDDED_WORKER = ${JSON.stringify(files)};`);
+source = source.replace(VERSION_MARKER, () => `const SETUP_VERSION = ${JSON.stringify(pkg.version)};`);
+writeFileSync(OUT, source);
+console.log(`${OUT}: the speech setup ${pkg.version}, with ${Object.keys(files).join(', ')}`);
