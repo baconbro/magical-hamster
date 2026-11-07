@@ -192,3 +192,5 @@ pnpm install:plugin /path/to/vault .obsidian-desktop
 `pnpm dev` serves the browser harness: by default the real session on fake hosts, with `?mode=fake` a scripted store with named states. Its query parameters are listed at the top of `dev/harness.tsx`. The fake vault reports the plugin's own writes back to the session, as Obsidian does (`FakeNotesHost.onWrite`); an edit by hand can be played from the console, as described at the end of that file.
 
 A single test file: `node --disable-warning=ExperimentalWarning --test test/sectionAt.test.ts`.
+
+There is no lint command. The Obsidian community directory runs `eslint-plugin-obsidianmd` over every submission, and that scan is the lint: the release commits of 0.1.1 to 0.1.4 are what it found. There is none locally because typescript-eslint supports TypeScript below 6.1, while this repository typechecks with TypeScript 7 (the native compiler, tsgo). Anyone who wants one can add a `lint/` pnpm workspace package with its own TypeScript 6, `eslint`, `typescript-eslint`, `eslint-plugin-obsidianmd` and `obsidian`, and run eslint from there against `src/`; the sources need no change for it.
