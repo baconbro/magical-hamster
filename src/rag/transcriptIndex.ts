@@ -13,10 +13,20 @@ export interface TranscriptIndexDeps {
   onError?(error: unknown): void;
 }
 
-/** Ollama down or the model not pulled: the next request would fail the same way. */
+/**
+ * Requests made for one chunk that failed on the chunk's own account. Past this it stays closed
+ * and unsearchable: asked for again at every close, a chunk the server refuses would cost a
+ * request per close for the rest of the meeting, and k such chunks k requests each.
+ */
+const MAX_CHUNK_ATTEMPTS = 3;
+
+/**
+ * Ollama down, the model not pulled, or vectors of another dimension than the store's: the next
+ * request would fail the same way, whatever the chunk.
+ */
 function looksGlobal(error: unknown): boolean {
   const kind = (error as { kind?: unknown } | null)?.kind;
-  return kind === 'unreachable' || kind === 'model_missing';
+  return kind === 'unreachable' || kind === 'model_missing' || kind === 'dimension';
 }
 
 function chunkNumber(chunk: TranscriptChunk): number {
@@ -36,6 +46,8 @@ export class TranscriptIndex {
 
   private queue: TranscriptChunk[] = [];
   private failed: TranscriptChunk[] = [];
+  // Failed requests per chunk id, the global failures left out: those say nothing about the chunk.
+  private attempts = new Map<string, number>();
   private running: Promise<void> | null = null;
   // Created with the first vector: the dimension is the embedder's to decide.
   private store: VectorStore<TranscriptChunk> | null = null;
@@ -95,6 +107,7 @@ export class TranscriptIndex {
     this.counter = 0;
     this.queue = [];
     this.failed = [];
+    this.attempts.clear();
     this.running = null;
     this.store = null;
   }
@@ -126,8 +139,10 @@ export class TranscriptIndex {
 
   private retryFailed(): void {
     if (this.failed.length === 0) return;
-    this.queue = [...this.failed, ...this.queue].sort((a, b) => chunkNumber(a) - chunkNumber(b));
+    const again = this.failed.filter((chunk) => (this.attempts.get(chunk.id) ?? 0) < MAX_CHUNK_ATTEMPTS);
     this.failed = [];
+    if (again.length === 0) return;
+    this.queue = [...again, ...this.queue].sort((a, b) => chunkNumber(a) - chunkNumber(b));
   }
 
   /** Embeds queued chunks one at a time, in order. Never rejects. */
@@ -152,6 +167,8 @@ export class TranscriptIndex {
             // The rest would fail the same way: wait for the next close or flush.
             this.failed.push(...this.queue);
             this.queue = [];
+          } else {
+            this.attempts.set(chunk.id, (this.attempts.get(chunk.id) ?? 0) + 1);
           }
           this.tell(() => this.deps.onError?.(error));
           continue;

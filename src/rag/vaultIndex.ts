@@ -46,10 +46,13 @@ function kindOf(error: unknown): unknown {
   return (error as { kind?: unknown } | null)?.kind;
 }
 
-/** Ollama down or the model not pulled: every other file would fail the same way. */
+/**
+ * Ollama down, the model not pulled, or vectors of another dimension than the store's: every
+ * other file would fail the same way.
+ */
 function looksGlobal(error: unknown): boolean {
   const kind = kindOf(error);
-  return kind === 'unreachable' || kind === 'model_missing';
+  return kind === 'unreachable' || kind === 'model_missing' || kind === 'dimension';
 }
 
 function titleOf(path: string): string {

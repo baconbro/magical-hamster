@@ -79,7 +79,10 @@ export function createEmbedder(opts: EmbedderOptions): Embedder {
     }
     for (const vector of result.vectors) {
       if (vector.length !== dim) {
-        throw new Error(`Embedding dimension mismatch: expected ${dim}, got ${vector.length}`);
+        // The server ignores the dimension asked for: every request would fail the same way.
+        throw Object.assign(new Error(`Embedding dimension mismatch: expected ${dim}, got ${vector.length}`), {
+          kind: 'dimension' as const,
+        });
       }
     }
     if (result.promptTokens > 0) opts.onTokens?.(result.promptTokens);

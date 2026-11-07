@@ -3913,6 +3913,37 @@ describe('questions', () => {
     );
   });
 
+  it('embeds the transcript again when the embedding model or its dimensions change during the meeting', async () => {
+    const env = await boot();
+    env.c.selectSection(BOARD);
+    await env.c.startRecording();
+    env.world.sources[0].say('The steering committee moved the cutover to March.', 0, 40);
+    env.world.sources[0].say('The vendor contract runs until the cutover weekend.', 40, 80);
+    await settle();
+    assert.equal(env.world.llm.embeds.length, 2, 'one request per stretch');
+
+    // Saved in the settings tab: vectors of 768 floats cannot answer a query of 256.
+    env.world.setSettings({ embedDimensions: 256 });
+    env.session.handleSettingsChange();
+    await settle();
+    assert.equal(env.world.llm.embeds.length, 4, 'both stretches are embedded again');
+    assert.ok(env.world.llm.embeds.slice(2).every((req) => req.dimensions === 256), 'with the new dimension');
+
+    env.world.llm.answer = (req) => (isQuestion(req) ? 'In March [1].' : '### Overview\nA summary.');
+    await env.c.ask('When is the cutover, according to the steering committee?');
+    assert.deepEqual(
+      env.state().qa.entries[0].sources.map((source) => [source.kind, source.time]),
+      [['transcript', '00:00']],
+    );
+
+    // A setting that leaves the embedding space alone embeds nothing.
+    const embeds = env.world.llm.embeds.length;
+    env.world.setSettings({ micLabel: 'Mic (room)' });
+    env.session.handleSettingsChange();
+    await settle();
+    assert.equal(env.world.llm.embeds.length, embeds);
+  });
+
   it('hands the model the last fifteen minutes of talk, the newest lines when they do not all fit', async () => {
     const env = await boot();
     env.c.selectSection(BOARD);

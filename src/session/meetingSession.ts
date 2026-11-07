@@ -450,6 +450,8 @@ class MeetingSession implements HamsterSession {
   private readonly writeQueue: WriteQueue;
   private readonly enhance: EnhanceEngine;
   private transcriptIndex: TranscriptIndex;
+  /** The embedding space the transcript index holds vectors of: `embedIdNow()` when it was made. */
+  private embedId: string;
   /** Chunks of this meeting's transcript that can be searched. */
   private searchable = 0;
   /** Excerpts found for a shorthand line, while that count stands. */
@@ -687,6 +689,7 @@ class MeetingSession implements HamsterSession {
     });
     this.enhance = new EnhanceEngine(this.enhanceDeps());
     this.enhance.setLive(this.state.liveEnhance);
+    this.embedId = this.embedIdNow();
     this.transcriptIndex = this.newTranscriptIndex();
     this.controller = this.buildController();
   }
@@ -1101,6 +1104,12 @@ class MeetingSession implements HamsterSession {
       }
       // The indexed folders may have been typed in the settings tab, or have arrived by sync.
       if (this.vaultIndex) this.onIndexStatus(this.vaultIndex.status());
+      // Vectors of another embedding model or dimension cannot be searched with the new one's.
+      const embedId = this.embedIdNow();
+      if (embedId !== this.embedId) {
+        this.embedId = embedId;
+        this.reindexTranscript();
+      }
       void this.refreshOllama();
       // The soft-marker pattern or the companion prefix may have changed.
       this.derive();
@@ -3356,6 +3365,25 @@ class MeetingSession implements HamsterSession {
       },
     });
     return index;
+  }
+
+  /** The embedding space of the settings: the same string the vault index is given as its model id. */
+  private embedIdNow(): string {
+    const s = this.deps.settings();
+    return `${s.embedModel}@${s.embedDimensions}`;
+  }
+
+  /**
+   * The embedding space changed under the meeting: the vectors of its transcript would be
+   * compared with queries of another model, or be refused by the store for their length. A fresh
+   * index is fed every turn again; the excerpts found so far were found in the old space.
+   */
+  private reindexTranscript(): void {
+    this.transcriptIndex.reset();
+    this.transcriptIndex = this.newTranscriptIndex();
+    this.searchable = 0;
+    this.excerpts.clear();
+    for (const turn of this.state.turns) this.transcriptIndex.addTurn(turn);
   }
 
   /* ─────────────────────────────── Enhance ────────────────────────────── */

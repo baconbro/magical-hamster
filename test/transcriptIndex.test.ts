@@ -305,6 +305,41 @@ test('flush retries a failed chunk once, not until it works', async () => {
   assert.equal((await index.search('budget', 3, 0)).length, 1);
 });
 
+test('a chunk the embedder keeps refusing is asked for three times, then left unsearchable', async () => {
+  const fake = fakeEmbedder();
+  const errors: unknown[] = [];
+  const index = new TranscriptIndex({ embedder: fake.embedder, onError: (e) => errors.push(e) });
+  fake.embedder.embedDocuments = async (docs) => {
+    fake.documents.push(...docs);
+    throw new Error('HTTP 500 from Ollama');
+  };
+
+  // Each close retries what failed before it: without a cap, six closes would cost 21 requests.
+  for (let i = 0; i < 6; i++) {
+    index.addTurn(turn(i * 40, i * 40 + 40, `${BUDGET} Stretch ${i + 1}.`));
+    await settle();
+  }
+  assert.equal(index.chunks().length, 6, 'every chunk is still closed');
+  assert.ok(fake.documents.length <= 18, `${fake.documents.length} requests for six chunks`);
+  const perChunk = new Map<string, number>();
+  for (const doc of fake.documents) perChunk.set(doc.text, (perChunk.get(doc.text) ?? 0) + 1);
+  assert.ok([...perChunk.values()].every((n) => n <= 3), 'three requests per chunk at most');
+  assert.equal(errors.length, fake.documents.length, 'one error per request, none for a chunk given up');
+  assert.deepEqual(await index.search('budget', 10, -1), []);
+
+  // flush retries what is under the cap, once each time; the rest is given up for good.
+  await index.flush();
+  await index.flush();
+  const settled = fake.documents.length;
+  assert.ok(settled <= 18, `${settled} requests after two flushes`);
+  await index.flush();
+  assert.equal(fake.documents.length, settled, 'nothing left under the cap');
+  index.addTurn(turn(240, 280, HIRING));
+  await settle();
+  assert.equal(fake.documents.length, settled + 1, 'a new chunk is asked for, the old ones are not');
+  assert.equal(index.chunks().length, 7);
+});
+
 test('a failed chunk is retried when the next chunk closes, in order', async () => {
   const fake = fakeEmbedder();
   const index = new TranscriptIndex({ embedder: fake.embedder, onError: () => {} });
@@ -353,6 +388,31 @@ test('when Ollama is unreachable the rest of the queue waits instead of failing 
   assert.equal(fake.documents.length, 1, 'E2 and E3 were not attempted');
   assert.deepEqual(await index.search('budget', 5, -1), []);
 
+  await index.flush();
+  assert.deepEqual(
+    fake.documents.map((d) => d.text),
+    [BUDGET, BUDGET, HIRING, MIGRATION],
+  );
+  assert.equal((await index.search('budget analyst migration', 5, -1)).length, 3);
+  assert.equal(errors.length, 1);
+});
+
+test('a vector of another dimension stops the queue like an unreachable Ollama, and counts against no chunk', async () => {
+  const fake = fakeEmbedder();
+  const release = fake.block();
+  const errors: unknown[] = [];
+  const index = new TranscriptIndex({ embedder: fake.embedder, onError: (e) => errors.push(e) });
+  const mismatch = Object.assign(new Error('Embedding dimension mismatch: expected 768, got 256'), { kind: 'dimension' });
+  fake.failNext(mismatch);
+  threeTopics(index);
+  release();
+  await settle();
+
+  assert.deepEqual(errors, [mismatch]);
+  assert.equal(fake.documents.length, 1, 'E2 and E3 were not attempted');
+  assert.deepEqual(await index.search('budget', 5, -1), []);
+
+  // The server answers with the right dimension again: all three are tried, E1 included.
   await index.flush();
   assert.deepEqual(
     fake.documents.map((d) => d.text),
