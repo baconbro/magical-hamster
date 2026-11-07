@@ -1,0 +1,92 @@
+/* --------------------------------------------------------------------------
+ * A preflight that stays inside the plugin.
+ *
+ * Every selector is `.mh-root :where(el)` on purpose. `:where` contributes
+ * nothing to specificity, so these rules sit at 0-1-0: above Obsidian's own
+ * element rules, and below the utilities imported after them.
+ * ------------------------------------------------------------------------ */
+
+.mh-root {
+  box-sizing: border-box;
+  height: 100%;
+  font-family: var(--font-interface, ui-sans-serif, system-ui, -apple-system, sans-serif);
+  font-size: var(--font-ui-small, 13px);
+  line-height: 1.45;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-align: left;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+.mh-root :where(*, *::before, *::after) {
+  box-sizing: border-box;
+  border: 0 solid var(--color-line);
+  margin: 0;
+  padding: 0;
+}
+
+.mh-root :where(h1, h2, h3, h4, h5, h6) {
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+}
+
+.mh-root :where(a) { color: inherit; text-decoration: inherit; cursor: pointer; }
+.mh-root :where(a:hover) { color: inherit; text-decoration: inherit; }
+
+.mh-root :where(ol, ul, menu) { list-style: none; }
+
+/* Obsidian dresses bare buttons (background, padding, shadow, hover), and a
+   button that keeps them fights every utility put on it. */
+.mh-root :where(button, input, optgroup, select, textarea) {
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  background: transparent;
+  background-image: none;
+  border-radius: 0;
+  box-shadow: none;
+  opacity: 1;
+  height: auto;
+}
+.mh-root :where(button, [type="button"], [type="submit"]) {
+  appearance: button;
+  cursor: pointer;
+  text-align: inherit;
+}
+.mh-root :where(button:hover, button:active) { background: transparent; box-shadow: none; }
+.mh-root :where(button:not(:focus-visible)) { box-shadow: none; }
+.mh-root :where(button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible) {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 1px;
+}
+.mh-root :where(input, textarea, select) { min-height: 0; }
+.mh-root :where(input::placeholder, textarea::placeholder) {
+  color: color-mix(in srgb, currentColor 45%, transparent);
+  opacity: 1;
+}
+.mh-root :where(input:focus, textarea:focus, select:focus) { box-shadow: none; }
+.mh-root :where(:disabled) { cursor: default; }
+
+.mh-root :where(img, svg, video, canvas) { display: block; vertical-align: middle; }
+.mh-root :where(hr) { height: 0; color: inherit; border-top-width: 1px; }
+.mh-root :where(p, pre, blockquote, figure) { margin: 0; }
+.mh-root :where(pre, code, kbd, samp) { font-family: var(--font-monospace, ui-monospace, SFMono-Regular, Menlo, monospace); }
+
+.mh-root ::-webkit-scrollbar { width: 9px; height: 9px; }
+.mh-root ::-webkit-scrollbar-track { background: transparent; }
+.mh-root ::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.mh-root ::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, currentColor 32%, transparent);
+  background-clip: content-box;
+}
+
+/* The leaf the plugin is given. */
+.mh-view.view-content { padding: 0; overflow: hidden; }

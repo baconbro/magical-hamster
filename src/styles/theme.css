@@ -1,0 +1,35 @@
+/* --------------------------------------------------------------------------
+ * Wearing the reader's Obsidian theme.
+ *
+ * Three rules.
+ *
+ * 1. Consume SEMANTIC Obsidian tokens (`--background-primary`, `--text-normal`),
+ *    never raw ramp steps: those are what themes are careful about.
+ * 2. Every var() carries a fallback, Obsidian's own default. An undefined
+ *    custom property is invalid at computed-value time, and the surface would
+ *    turn transparent.
+ * 3. No dark block. Obsidian flips these tokens itself between light and dark.
+ *
+ * These are set on `.mh-root`, not in `@theme`: Obsidian defines its variables
+ * on <body>, so a reference resolved at :root would find nothing.
+ * ------------------------------------------------------------------------ */
+
+.mh-root {
+  --color-surface:      var(--background-primary, #ffffff);
+  --color-surface-alt:  var(--background-secondary, #f6f6f6);
+  --color-ink:          var(--text-normal, #222222);
+  --color-muted:        var(--text-muted, #5c5c5c);
+  --color-faint:        var(--text-faint, #ababab);
+  --color-brand:       var(--interactive-accent, #7852ee);
+  --color-brand-hover: var(--interactive-accent-hover, #8a6cf0);
+  /* Chosen in JS from the accent's luminance: white on purple, black on a pale yellow. */
+  --color-on-brand:    var(--mh-on-accent, var(--text-on-accent, #ffffff));
+  /* Mixed from the text colour rather than read from --background-modifier-border,
+     which is legitimately `transparent` in borderless themes. */
+  --color-line:         color-mix(in oklab, var(--text-normal, #222222) 13%, var(--background-primary, #ffffff));
+  --color-hover:        color-mix(in oklab, var(--text-normal, #222222) 7%, var(--background-primary, #ffffff));
+  --color-chip:         color-mix(in oklab, var(--interactive-accent, #7852ee) 16%, var(--background-primary, #ffffff));
+  --color-danger:       var(--text-error, #e93147);
+  --color-ok:           var(--text-success, #08b94e);
+  --color-warn:         var(--text-warning, #ec7500);
+}

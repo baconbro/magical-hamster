@@ -1,0 +1,40 @@
+/* Rendered Markdown inside the sidebar (enhanced notes, summaries, answers).
+   The scoped reset strips list markers and spacing; this puts back the little
+   that prose needs. The elements are the ones src/ui/miniMarkdown.ts builds. */
+
+.mh-root .mh-md { line-height: 1.5; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.mh-root .mh-md :where(p) { margin: 0 0 .5em; }
+.mh-root .mh-md :where(p:last-child) { margin-bottom: 0; }
+.mh-root .mh-md :where(ul) { list-style: disc outside; padding-left: 1.25em; margin: 0 0 .5em; }
+.mh-root .mh-md :where(ol) { list-style: decimal outside; padding-left: 1.5em; margin: 0 0 .5em; }
+.mh-root .mh-md :where(li) { margin: .2em 0; }
+.mh-root .mh-md :where(li > p) { margin: 0; }
+/* All six levels: a model nests its sections as deep as it likes, and a heading the reset left
+   bare reads as one more line of the paragraph above it. */
+.mh-root .mh-md :where(h1, h2, h3, h4, h5, h6) { font-weight: 600; margin: .9em 0 .35em; line-height: 1.3; }
+.mh-root .mh-md :where(h1) { font-size: 1.15em; }
+.mh-root .mh-md :where(h2) { font-size: 1.08em; }
+.mh-root .mh-md :where(h5, h6) { color: var(--color-muted); }
+.mh-root .mh-md :where(h1:first-child, h2:first-child, h3:first-child, h4:first-child, h5:first-child, h6:first-child) { margin-top: 0; }
+.mh-root .mh-md :where(strong) { font-weight: 600; }
+.mh-root .mh-md :where(em) { font-style: italic; }
+.mh-root .mh-md :where(code) {
+  font-size: .92em;
+  padding: .08em .3em;
+  border-radius: 4px;
+  background: var(--color-hover);
+}
+/* A list inside an item: close under its item, and a marker of its own per level. A numbered
+   list keeps its numbers at any level. */
+.mh-root .mh-md :where(li > ul, li > ol) { margin: .2em 0 0; }
+.mh-root .mh-md :where(li ul) { list-style-type: circle; }
+.mh-root .mh-md :where(li li ul) { list-style-type: square; }
+.mh-root .mh-md :where(pre) {
+  margin: 0 0 .5em;
+  padding: .5em .65em;
+  border-radius: 6px;
+  background: var(--color-hover);
+  overflow-x: auto;
+  font-size: .92em;
+}
+.mh-root .mh-md :where(pre code) { padding: 0; background: none; font-size: inherit; }

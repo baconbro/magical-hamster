@@ -1,0 +1,42 @@
+name: Release
+
+# A tag equal to the plugin's version (0.2.0, without a "v") builds the release build and
+# publishes it: the three files Obsidian installs, and the speech setup script.
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: The tag, manifest.json and package.json give the same version
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          manifest=$(node -p "require('./manifest.json').version")
+          package=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$manifest" ] || [ "$tag" != "$package" ]; then
+            echo "Tag $tag, manifest.json $manifest, package.json $package: they must be the same."
+            exit 1
+          fi
+      - run: pnpm test
+      - run: pnpm build
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/main.js dist/manifest.json dist/styles.css dist/setup-speech.mjs \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Install from Obsidian: Settings, Community plugins, Browse, Magical Hamster. Speech recognition: see the README."

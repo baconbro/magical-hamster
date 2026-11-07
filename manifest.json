@@ -1,0 +1,10 @@
+{
+  "id": "magical-hamster",
+  "name": "Magical Hamster",
+  "version": "0.1.0",
+  "minAppVersion": "1.13.0",
+  "description": "Meeting assistant: live transcript, enhanced notes, summaries and Q&A grounded in your vault. Runs on your Mac with Ollama.",
+  "author": "Fred",
+  "authorUrl": "https://github.com/baconbro",
+  "isDesktopOnly": true
+}

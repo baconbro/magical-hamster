@@ -1,0 +1,68 @@
+/* --------------------------------------------------------------------------
+ * Magical Hamster's stylesheet, for a host that already has one.
+ *
+ * `@import "tailwindcss"` pulls in the theme, preflight and the utilities, each
+ * in a cascade layer. Neither half of that is safe inside Obsidian: preflight
+ * would restyle Obsidian's own buttons and headings, and layered utilities
+ * lose to Obsidian's unlayered element rules whatever their specificity.
+ *
+ * So the import is expanded by hand: theme and utilities, unlayered, with a
+ * scoped reset of our own in between. Everything lives under `.mh-root`.
+ *
+ * That includes the utilities. Obsidian loads this file for the whole app, and
+ * a bare `.hidden`, `.container` or `.table` would restyle whatever else
+ * carries the name: raw HTML in a note, another plugin, Obsidian itself. They
+ * are generated inside `:where(.mh-root)`, which adds the scope and no
+ * specificity, so a utility still weighs 0-1-0 against the reset and against
+ * the other utilities. It works on a descendant of the root, not on the root
+ * element itself, which carries none.
+ * ------------------------------------------------------------------------ */
+
+@import "tailwindcss/theme.css";
+@import "./reset.css";
+@import "./theme.css";
+@import "./markdown.css";
+
+:where(.mh-root) {
+  @tailwind utilities;
+}
+
+@source "../";
+
+@custom-variant dark (&:where(.mh-root.dark, .mh-root.dark *));
+
+/* Semantic colours. The values here only make Tailwind generate the utilities
+   (bg-surface, text-muted...); the real values are set on `.mh-root` in
+   theme.css, from the reader's Obsidian theme. */
+@theme {
+  --color-surface: #ffffff;
+  --color-surface-alt: #f6f6f6;
+  --color-ink: #222222;
+  --color-muted: #5c5c5c;
+  --color-faint: #ababab;
+  --color-brand: #7852ee;
+  --color-brand-hover: #8a6cf0;
+  --color-on-brand: #ffffff;
+  --color-line: #e0e0e0;
+  --color-hover: #f2f2f2;
+  --color-chip: #ece6fd;
+  --color-danger: #e93147;
+  --color-ok: #08b94e;
+  --color-warn: #ec7500;
+}
+
+.mh-root { color-scheme: light; }
+.mh-root.dark { color-scheme: dark; }
+
+.mh-root .tnum { font-variant-numeric: tabular-nums; }
+.mh-root .no-scrollbar::-webkit-scrollbar { display: none; }
+
+@keyframes mh-pulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
+.mh-root .mh-pulse { animation: mh-pulse 1.4s ease-in-out infinite; }
+
+@keyframes mh-fade { from { opacity: 0; transform: translateY(3px) } to { opacity: 1; transform: none } }
+.mh-root .mh-fade { animation: mh-fade .18s ease both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mh-root .mh-pulse, .mh-root .mh-fade { animation: none; }
+}

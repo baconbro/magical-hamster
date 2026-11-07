@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.wav
+*.log
+*.tar.bz2
+*.tgz
+.DS_Store
+dev-vault/
+.claude/
+profiles/*.local.json
+.hotreload

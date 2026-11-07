@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Magical Hamster harness</title>
+    <!--
+      A stand-in for Obsidian, not a product page.
+
+      It defines Obsidian's CSS variable contract and styles bare elements the
+      heavy-handed way Obsidian does, so the plugin's scoped reset and theme map
+      are exercised for real. The middle pane is a plain textarea playing the
+      daily note; the right pane is the leaf the plugin mounts into.
+
+      Development only. Nothing here ships in the plugin bundle.
+    -->
+    <style>
+      /* ---------------------------------------------------------------- *
+       * Obsidian's variable contract.
+       * Values follow Obsidian's own defaults; the derivations underneath
+       * are the ones Obsidian itself makes, so a preset only has to restate
+       * the ramp and the accent.
+       * ---------------------------------------------------------------- */
+      body {
+        /* Obsidian builds the accent ramp by MULTIPLYING lightness, so both
+           derived steps are lighter than the base — in light themes as well as
+           dark ones. Copied verbatim from app.css (1.13.7, L2933-2935 /
+           L2983-2985) because guessing it the intuitive way (hover = darker in
+           light) hides a whole class of washed-out-accent bug. */
+        --color-accent:   hsl(var(--accent-h), var(--accent-s), var(--accent-l));
+        --color-accent-1: hsl(calc(var(--accent-h) - 1), calc(var(--accent-s) * 1.01), calc(var(--accent-l) * 1.075));
+        --color-accent-2: hsl(calc(var(--accent-h) - 3), calc(var(--accent-s) * 1.02), calc(var(--accent-l) * 1.15));
+
+        --interactive-accent: var(--color-accent-1);
+        --interactive-accent-hover: var(--color-accent-2);
+        --text-accent: var(--color-accent);
+        --text-accent-hover: var(--color-accent-2);
+
+        --background-primary: var(--color-base-00);
+        --background-primary-alt: var(--color-base-10);
+        --background-secondary: var(--color-base-20);
+        --background-secondary-alt: var(--color-base-05);
+
+        --background-modifier-border: var(--color-base-30);
+        --background-modifier-border-hover: var(--color-base-35);
+        --background-modifier-border-focus: var(--color-base-40);
+        --background-modifier-hover: rgba(var(--mono-rgb-100), .075);
+        --background-modifier-active-hover: rgba(var(--mono-rgb-100), .15);
+        --background-modifier-form-field: var(--color-base-00);
+
+        --text-normal: var(--color-base-100);
+        --text-muted: var(--color-base-70);
+        --text-faint: var(--color-base-50);
+        --text-on-accent: #ffffff;
+        --text-error: var(--color-red);
+        --text-warning: var(--color-orange);
+        --text-success: var(--color-green);
+
+        --interactive-normal: var(--color-base-00);
+        --interactive-hover: var(--color-base-10);
+
+        --layer-modal: 100;
+      }
+
+      /* ---- Default light ---- */
+      body.t-light {
+        --mono-rgb-100: 0, 0, 0;
+        --color-base-00: #ffffff; --color-base-05: #fcfcfc; --color-base-10: #fafafa;
+        --color-base-20: #f6f6f6; --color-base-25: #e3e3e3; --color-base-30: #e0e0e0;
+        --color-base-35: #d4d4d4; --color-base-40: #bdbdbd; --color-base-50: #ababab;
+        --color-base-60: #707070; --color-base-70: #5c5c5c; --color-base-100: #222222;
+        --color-red: #e93147; --color-orange: #ec7500; --color-yellow: #e0ac00;
+        --color-green: #08b94e; --color-cyan: #00bfbc; --color-blue: #086ddd;
+        --color-purple: #7852ee; --color-pink: #d53984;
+        --accent-h: 258; --accent-s: 88%; --accent-l: 66%;
+      }
+
+      body.theme-dark {
+        --color-accent-1: hsl(calc(var(--accent-h) - 3), calc(var(--accent-s) * 1.02), calc(var(--accent-l) * 1.15));
+        --color-accent-2: hsl(calc(var(--accent-h) - 5), calc(var(--accent-s) * 1.05), calc(var(--accent-l) * 1.29));
+        --interactive-accent: var(--color-accent);
+        --interactive-accent-hover: var(--color-accent-1);
+        --text-accent: var(--color-accent-1);
+      }
+
+      /* ---- Default dark. Note --background-secondary is LIGHTER than
+              --background-primary here, and darker in the light theme: Obsidian's
+              primary/secondary encode content-vs-chrome, not raised-vs-recessed. ---- */
+      body.t-dark {
+        --mono-rgb-100: 255, 255, 255;
+        --color-base-00: #1e1e1e; --color-base-05: #212121; --color-base-10: #242424;
+        --color-base-20: #262626; --color-base-25: #2a2a2a; --color-base-30: #363636;
+        --color-base-35: #3f3f3f; --color-base-40: #555555; --color-base-50: #666666;
+        --color-base-60: #6e6e6e; --color-base-70: #b3b3b3; --color-base-100: #dadada;
+        --color-red: #fb464c; --color-orange: #e9973f; --color-yellow: #e0de71;
+        --color-green: #44cf6e; --color-cyan: #53dfdd; --color-blue: #027aff;
+        --color-purple: #a882ff; --color-pink: #fa99cd;
+        --accent-h: 258; --accent-s: 88%; --accent-l: 66%;
+      }
+
+      /* ---- AMOLED: pure black, near-invisible borders. Breaks anything that
+              assumes the background is merely dark rather than absolute. ---- */
+      body.t-amoled {
+        --mono-rgb-100: 255, 255, 255;
+        --color-base-00: #000000; --color-base-05: #050505; --color-base-10: #0a0a0a;
+        --color-base-20: #0d0d0d; --color-base-25: #121212; --color-base-30: #1a1a1a;
+        --color-base-35: #202020; --color-base-40: #2a2a2a; --color-base-50: #4a4a4a;
+        --color-base-60: #6a6a6a; --color-base-70: #9a9a9a; --color-base-100: #f0f0f0;
+        --color-red: #ff5561; --color-orange: #ffa14a; --color-yellow: #ffe066;
+        --color-green: #4ade80; --color-cyan: #5eead4; --color-blue: #60a5fa;
+        --color-purple: #c084fc; --color-pink: #f472b6;
+        --accent-h: 168; --accent-s: 100%; --accent-l: 44%;
+      }
+
+      /* ---- Sepia: warm, low contrast, and a PALE accent — the case where
+              white text on an accent fill becomes unreadable. ---- */
+      body.t-sepia {
+        --mono-rgb-100: 0, 0, 0;
+        --color-base-00: #faf4e8; --color-base-05: #f7f0e2; --color-base-10: #f3ebdb;
+        --color-base-20: #eee4d0; --color-base-25: #e6dac2; --color-base-30: #ded0b4;
+        --color-base-35: #d2c2a2; --color-base-40: #bda986; --color-base-50: #a89372;
+        --color-base-60: #8a7658; --color-base-70: #6f5d44; --color-base-100: #453a2a;
+        --color-red: #b4413c; --color-orange: #c2762a; --color-yellow: #b8971f;
+        --color-green: #5f8a3f; --color-cyan: #3f8a85; --color-blue: #3d6ea8;
+        --color-purple: #7a5aa8; --color-pink: #a8508a;
+        --accent-h: 52; --accent-s: 78%; --accent-l: 60%;
+      }
+
+      /* ---- High contrast: pure white on pure black, hard borders. ---- */
+      body.t-contrast {
+        --mono-rgb-100: 255, 255, 255;
+        --color-base-00: #000000; --color-base-05: #0a0a0a; --color-base-10: #101010;
+        --color-base-20: #181818; --color-base-25: #202020; --color-base-30: #6a6a6a;
+        --color-base-35: #8a8a8a; --color-base-40: #a0a0a0; --color-base-50: #c0c0c0;
+        --color-base-60: #d8d8d8; --color-base-70: #ebebeb; --color-base-100: #ffffff;
+        --color-red: #ff4d4d; --color-orange: #ffab00; --color-yellow: #ffe600;
+        --color-green: #00e676; --color-cyan: #00e5ff; --color-blue: #4d9fff;
+        --color-purple: #c77dff; --color-pink: #ff70b8;
+        --accent-h: 54; --accent-s: 100%; --accent-l: 50%;
+      }
+
+      /* ---------------------------------------------------------------- *
+       * The host's own chrome, styled the way Obsidian styles it: bare
+       * element selectors, unlayered. If the plugin's reset ever leaks, this is
+       * what visibly breaks.
+       * ---------------------------------------------------------------- */
+      html, body { height: 100%; margin: 0; }
+      body {
+        background: var(--background-primary); color: var(--text-normal);
+        font-family: -apple-system, "Segoe UI", sans-serif; font-size: 16px;
+        display: flex; height: 100%;
+      }
+      button {
+        background: var(--interactive-normal); color: var(--text-normal);
+        padding: 6px 12px; border: 1px solid var(--background-modifier-border);
+        border-radius: 6px; font-size: 14px;
+        box-shadow: 0 1px 2px rgba(0,0,0,.15); cursor: pointer;
+      }
+      button:hover { background: var(--interactive-hover); }
+      input, select, textarea {
+        background: var(--background-modifier-form-field); color: var(--text-normal);
+        border: 1px solid var(--background-modifier-border);
+        border-radius: 6px; padding: 6px 10px; font-size: 14px;
+      }
+      h1 { font-size: 2em; font-weight: 700; margin: .67em 0; }
+      h2 { font-size: 1.5em; font-weight: 700; margin: .83em 0; }
+      h3 { font-size: 1.17em; font-weight: 700; margin: 1em 0; }
+      p { margin: 1em 0; }
+      ul, ol { list-style: disc outside; padding-left: 2em; margin: 1em 0; }
+      a { color: var(--text-accent); text-decoration: underline; }
+      svg { display: inline; }
+      /* Obsidian also has rules one class or attribute stronger than a bare
+         element. They outrank the plugin's scoped reset, so a control that
+         relies on the reset alone shows it here. */
+      textarea:focus, input[type="text"]:focus, select:focus {
+        box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
+      }
+      input[type="checkbox"] {
+        appearance: none; width: 16px; height: 16px; border-radius: 4px;
+        border: 1px solid var(--background-modifier-border-hover); padding: 0;
+      }
+      input[type="checkbox"]:checked { background: var(--interactive-accent); }
+
+      
+      .host-files {
+        width: 170px; flex: none; background: var(--background-secondary);
+        border-right: 1px solid var(--background-modifier-border); padding: 12px;
+        overflow: auto; font-size: 13px;
+      }
+      .host-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      .host-tabbar {
+        height: 38px; flex: none; background: var(--background-secondary);
+        border-bottom: 1px solid var(--background-modifier-border);
+        display: flex; align-items: center; gap: 8px; padding: 0 10px; font-size: 13px;
+      }
+      #daily {
+        flex: 1; min-height: 0; width: 100%; resize: none; border: 0; border-radius: 0;
+        padding: 18px 26px; font: 15px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: var(--background-primary); color: var(--text-normal); outline: none;
+      }
+      .host-right {
+        width: 420px; flex: none; display: flex; flex-direction: column;
+        border-left: 1px solid var(--background-modifier-border);
+        background: var(--background-secondary);
+      }
+      .view-content { flex: 1; min-height: 0; }
+
+      .harness-bar {
+        position: fixed; left: 10px; bottom: 10px; z-index: 9999;
+        display: flex; gap: 6px; align-items: center; flex-wrap: wrap; max-width: 60vw;
+        background: var(--background-secondary); padding: 6px 8px; border-radius: 8px;
+        border: 1px solid var(--background-modifier-border); font-size: 12px;
+      }
+      .harness-bar button, .harness-bar select { font-size: 12px; padding: 3px 8px; }
+      /* Obsidian's status bar: fixed over the bottom right corner, so over the right sidebar. */
+      .status-bar {
+        position: fixed; right: 0; bottom: 0; z-index: 9000;
+        display: flex; gap: 12px; padding: 4px 10px; font-size: 12px;
+        background: var(--background-secondary); color: var(--text-muted);
+        border-top: 1px solid var(--background-modifier-border);
+        border-left: 1px solid var(--background-modifier-border); border-top-left-radius: 6px;
+      }
+    </style>
+  </head>
+  <body class="theme-dark t-dark">
+    <div class="host-files">
+      <h3>Vault</h3>
+      <ul>
+        <li>00 Inbox</li>
+        <li>10 Work</li>
+        <li><a href="#">40 Resources</a></li>
+      </ul>
+      <button>New note</button>
+    </div>
+    <div class="host-main">
+      <div class="host-tabbar"><span id="daily-name">daily note</span></div>
+      <textarea id="daily" spellcheck="false"></textarea>
+    </div>
+    <div class="host-right">
+      <div class="host-tabbar"><span>Magical Hamster</span></div>
+      <div class="view-content mh-view" id="mh-leaf"></div>
+    </div>
+
+    <div class="status-bar"><span>0 backlinks</span><span>142 words</span><span>873 characters</span></div>
+
+    <div class="harness-bar" id="harness-bar">
+      <label for="theme">Theme</label>
+      <select id="theme">
+        <option value="t-dark">Default dark</option>
+        <option value="t-light">Default light</option>
+        <option value="t-amoled">AMOLED (pure black, teal accent)</option>
+        <option value="t-sepia">Sepia (low contrast, pale accent)</option>
+        <option value="t-contrast">High contrast (yellow accent)</option>
+      </select>
+    </div>
+
+    <script>
+      /* Obsidian's light/dark state lives in a class on <body>; the plugin reads it. */
+      const LIGHT = new Set(['t-light', 't-sepia']);
+      const sel = document.getElementById('theme');
+      const saved = localStorage.getItem('hamster-harness-theme');
+      if (saved) sel.value = saved;
+      const apply = () => {
+        const v = sel.value;
+        document.body.className = `${LIGHT.has(v) ? 'theme-light' : 'theme-dark'} ${v}`;
+        localStorage.setItem('hamster-harness-theme', v);
+        window.dispatchEvent(new CustomEvent('hamster-harness-theme'));
+      };
+      sel.addEventListener('change', apply);
+      apply();
+    </script>
+    <script type="module" src="/harness.tsx"></script>
+  </body>
+</html>

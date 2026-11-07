@@ -1,0 +1,39 @@
+name: CI
+
+# Typecheck, every unit test and the release build, on a Mac with Apple silicon: the only
+# computer the speech recognition runs on.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - name: Test
+        shell: bash
+        # Reading a job's log takes admin rights on the repository; annotations are public. The
+        # runner's summary of failing tests goes out as annotations, 40 lines each.
+        run: |
+          set -o pipefail
+          if pnpm test 2>&1 | tee test.log; then exit 0; fi
+          sed -n '/failing tests:/,$p' test.log | head -160 > failures.txt
+          split -l 40 failures.txt part-
+          for part in part-*; do
+            body=$(sed 's/%/%25/g; s/\r//g' "$part" | awk '{printf "%s%%0A", $0}')
+            echo "::error title=Failing tests (${part#part-})::${body}"
+          done
+          exit 1
+      - run: pnpm build
