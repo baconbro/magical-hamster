@@ -1817,6 +1817,34 @@ describe('CompanionStore', () => {
     assert.equal(h.companions.find(DATE, 'Steering#0'), null);
   });
 
+  it('keeps its index through a save that leaves the companion\'s keys as they were', async () => {
+    const h = new Harness();
+    const files = h.vault.getMarkdownFiles.bind(h.vault);
+    let walks = 0;
+    h.vault.getMarkdownFiles = () => {
+      walks += 1;
+      return files();
+    };
+    await h.companions.create('Mtg-a.md', companionText(), key);
+    h.frontmatter.set('Mtg-a.md', frontmatter);
+    // A meeting it does not know: the one answer that needs the vault walked.
+    assert.equal(h.companions.find(DATE, 'Other#0'), null);
+    assert.equal(walks, 1);
+
+    // The companion was written to, as it is every few seconds during a meeting: its keys did not move.
+    h.companions.refresh('Mtg-a.md');
+    assert.equal(h.companions.find(DATE, 'Other#0'), null);
+    assert.equal(walks, 1, 'no new walk');
+    assert.equal(h.companions.find(DATE, KEY_SOURCE), 'Mtg-a.md');
+
+    // Its keys were changed by hand: the index is built again, and the new key answers.
+    h.frontmatter.set('Mtg-a.md', { date: DATE, hamster_source: 'Steering#0' });
+    h.companions.refresh('Mtg-a.md');
+    assert.equal(h.companions.find(DATE, KEY_SOURCE), null);
+    assert.equal(walks, 2);
+    assert.equal(h.companions.find(DATE, 'Steering#0'), 'Mtg-a.md');
+  });
+
   it('follows a change of the companion prefix', () => {
     const h = new Harness();
     h.vault.add('Meeting-a.md', '');

@@ -181,18 +181,28 @@ export class CompanionStore {
       this.index = null;
       return;
     }
-    const known = this.overlay.has(path);
+    const held = this.overlay.get(path);
     // Every save of every note ends up here: only a possible companion is worth a new scan.
-    if (!known && !basenameOf(path).startsWith(this.settings().companionPrefix)) return;
-    this.index = null;
-    if (!known) return;
+    if (!held && !basenameOf(path).startsWith(this.settings().companionPrefix)) return;
+    if (!held) {
+      this.index = null;
+      return;
+    }
     const file = this.app.vault.getFileByPath(path);
     const frontmatter = file ? this.app.metadataCache.getFileCache(file)?.frontmatter : undefined;
     // No frontmatter in the cache yet says nothing; one without our keys does.
-    if (frontmatter === undefined) return;
+    if (frontmatter === undefined) {
+      this.index = null;
+      return;
+    }
     const key = companionKeyOf(frontmatter);
+    /* A companion's own save, every few seconds during a meeting, changes
+       nothing the index holds: it is kept, or every save would be followed by
+       a walk of the vault at the next miss. */
+    if (key && key.date === held.date && key.source === held.source) return;
     if (key) this.overlay.set(path, key);
     else this.overlay.delete(path);
+    this.index = null;
   }
 
   /* Companions are filed away later, so they are looked for anywhere in the
