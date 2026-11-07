@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { MarkdownView, Plugin, TFile } from 'obsidian';
+import { MarkdownView, Plugin, TFile, normalizePath } from 'obsidian';
 import type { Events, WorkspaceLeaf } from 'obsidian';
 import { DailyNoteLocator } from './editor/dailyNote.ts';
 import { liveCaptureExtension } from './editor/liveCapture.ts';
@@ -15,7 +15,7 @@ import { createOllamaClient } from './llm/ollama.ts';
 import { CompanionStore } from './notes/companionStore.ts';
 import { TextTarget, bufferFileField } from './notes/textTarget.ts';
 import { createSession } from './session/meetingSession.ts';
-import { DEFAULT_LOCAL, DEFAULT_SETTINGS, VIEW_TYPE, withDefaults } from './settings.ts';
+import { DEFAULT_LOCAL, DEFAULT_SETTINGS, PLUGIN_ID, VIEW_TYPE, parseSettings } from './settings.ts';
 import { HamsterSettingTab, checkSoftMarkerPattern } from './settings-tab.ts';
 import { createNodeTranscriptSource } from './stt/nodeSttSource.ts';
 import type { Clock, HamsterSession, HamsterSettings, LocalSettings, UiHost } from './types.ts';
@@ -64,8 +64,19 @@ export default class MagicalHamsterPlugin extends Plugin {
   async onload(): Promise<void> {
     const { app } = this;
     const { vault, workspace } = app;
-    this.settings = withDefaults((await this.loadData()) as Partial<HamsterSettings> | null);
+    const stored: unknown = await this.loadData();
+    this.settings = parseSettings(stored);
     this.local = loadLocal(app);
+    /* Obsidian answers null for a data.json it cannot parse, as for none at
+       all. The defaults are then in use, and the next change of a setting
+       would write over the file: said once, so that a hand edit or a sync
+       conflict can be put right first. */
+    if (stored === null && (await this.dataFileExists())) {
+      showNotice(
+        'The settings file (data.json in the plugin folder) could not be read, so the defaults are in use. Fix or delete it before changing a setting, or the next change writes over it.',
+        0,
+      );
+    }
 
     const locator = new DailyNoteLocator(app);
     await locator.load();
@@ -470,10 +481,21 @@ export default class MagicalHamsterPlugin extends Plugin {
   /** data.json changed on disk: another device synced its settings. */
   async onExternalSettingsChange(): Promise<void> {
     const previous = this.settings.ollamaUrl;
-    this.settings = withDefaults((await this.loadData()) as Partial<HamsterSettings> | null);
+    this.settings = parseSettings(await this.loadData());
     this.session?.handleSettingsChange();
     // Nobody at this computer chose the new address: it is said, and stays said until it is read.
     if (this.settings.ollamaUrl !== previous) this.warnOfRemoteOllama('synced');
+  }
+
+  /** Whether the plugin's data.json is on disk, whatever it holds. */
+  private async dataFileExists(): Promise<boolean> {
+    const { vault } = this.app;
+    const path = normalizePath(`${vault.configDir}/plugins/${this.manifest?.id ?? PLUGIN_ID}/data.json`);
+    try {
+      return await vault.adapter.exists(path);
+    } catch {
+      return false;
+    }
   }
 
   private async updateSettings(patch: Partial<HamsterSettings>): Promise<void> {

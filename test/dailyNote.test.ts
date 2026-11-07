@@ -2067,6 +2067,19 @@ describe('settings tab: the Ollama address', () => {
     }
   });
 
+  it('refuses an address with a user name or password: fetch could not send them, and they would be synced', () => {
+    const t = open();
+    try {
+      t.field.type('http://user:secret@gpu-box.local:11434');
+      assert.equal(t.row.error, 'Enter the address without a user name or password.');
+      t.field.fire('blur');
+      t.tab.hide();
+      assert.deepEqual(t.saved, []);
+    } finally {
+      t.close();
+    }
+  });
+
   it('saves nothing when the field is left as it was', () => {
     const t = open();
     try {

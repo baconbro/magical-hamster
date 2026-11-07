@@ -231,8 +231,16 @@ export function createOllamaClient(opts: OllamaClientOptions): OllamaClient {
   const doFetch: typeof fetch = opts.fetch ?? ((input, init) => window.fetch(input, init));
 
   const baseUrl = (): string => {
-    const raw = typeof opts.baseUrl === 'function' ? opts.baseUrl() : opts.baseUrl;
-    return raw.trim().replace(/\/+$/, '');
+    const raw = (typeof opts.baseUrl === 'function' ? opts.baseUrl() : opts.baseUrl).trim();
+    /* Without a user name or password: fetch refuses an address that carries
+       them, and the "not reachable" message quotes the address. The settings
+       refuse such an address too; this covers one that arrived another way. */
+    try {
+      const url = new URL(raw);
+      return `${url.origin}${url.pathname}`.replace(/\/+$/, '');
+    } catch {
+      return raw.replace(/\/+$/, '');
+    }
   };
 
   async function guarded<T>(

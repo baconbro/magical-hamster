@@ -164,6 +164,8 @@ async function load(
   data: Partial<HamsterSettings> | null = null,
   local: Partial<LocalSettings> = {},
   storage = new Map<string, unknown>(),
+  /** Paths the vault's adapter says exist: Obsidian's config files, and the plugin's own data.json. */
+  onDisk: string[] = [],
 ) {
   record.notices.length = 0;
   record.rendered.length = 0;
@@ -173,7 +175,10 @@ async function load(
   const app = {
     vault: {
       configDir: '.obsidian',
-      adapter: { exists: async (): Promise<boolean> => false, read: async (): Promise<string> => '' },
+      adapter: {
+        exists: async (path: string): Promise<boolean> => onDisk.includes(path),
+        read: async (): Promise<string> => '',
+      },
       on: listen,
       getName: (): string => 'Test Vault',
       getFileByPath: (): null => null,
@@ -230,6 +235,31 @@ async function load(
 const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 /* Read through a function: an assertion that the list is empty would otherwise narrow it for the rest of a test. */
 const notices = (): Recorded['notices'] => record.notices;
+
+describe('main: the settings file', () => {
+  const unreadable = (): Recorded['notices'] => notices().filter((n) => /settings file/.test(n.message));
+
+  it('says once, and keeps saying, when data.json is there but could not be read', async () => {
+    // Obsidian answers null for a file it cannot parse, as for none at all.
+    await load(null, {}, new Map(), ['.obsidian/plugins/magical-hamster/data.json']);
+    assert.equal(unreadable().length, 1);
+    assert.match(unreadable()[0].message, /^Magical Hamster: The settings file .*could not be read/);
+    assert.equal(unreadable()[0].ms, 0, 'stays up until dismissed');
+  });
+
+  it('says nothing on a first start, when there is no data.json yet', async () => {
+    await load(null);
+    assert.equal(unreadable().length, 0);
+  });
+
+  it('checks every field: a synced data.json with a wrong type leaves the default in place', async () => {
+    const t = await load({ numCtx: '16384' as unknown as number, micLabel: null as unknown as string });
+    assert.equal(t.plugin.settings.numCtx, DEFAULT_SETTINGS.numCtx);
+    assert.equal(t.plugin.settings.micLabel, DEFAULT_SETTINGS.micLabel);
+    await t.sync({ indexedFolders: 'x' as unknown as string[] });
+    assert.deepEqual(t.plugin.settings.indexedFolders, []);
+  });
+});
 
 describe('main: the runtime folder of the stats and the index', () => {
   const stats: Stats = {
@@ -463,9 +493,10 @@ describe('main: a soft-marker pattern that did not come through the settings tab
     assert.equal(t.session.deps.settings().softMarkerPattern, '$^');
     assert.equal(notices().length, 2);
 
-    // A hand-edited data.json can hold something that is not text at all.
+    // A hand-edited data.json can hold something that is not text at all:
+    // parseSettings puts the shipped pattern in its place, which needs no check.
     await t.sync({ softMarkerPattern: 7 as unknown as string });
-    assert.equal(t.session.deps.settings().softMarkerPattern, '$^');
+    assert.equal(t.session.deps.settings().softMarkerPattern, DEFAULT_SETTINGS.softMarkerPattern);
     assert.equal(t.storage.has('magical-hamster:soft-marker-checked-2'), false);
   });
 

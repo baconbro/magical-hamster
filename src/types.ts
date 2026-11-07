@@ -31,6 +31,8 @@ export type LinkPlacement = 'section-end' | 'heading';
 
 /** Synced with the vault (plugin data.json). */
 export interface HamsterSettings {
+  /** Format of data.json: `parseSettings` brings an older one up to date. */
+  settingsVersion: number;
   ollamaUrl: string;
   /** Generation model for summaries, Q&A and the Enhance button. */
   llmModel: string;

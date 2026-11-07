@@ -1,7 +1,10 @@
 import { PluginSettingTab, Setting, normalizePath } from 'obsidian';
 import type { App, DropdownComponent, Plugin, TextComponent } from 'obsidian';
 import { showNotice } from './host/notice.ts';
-import { softMarkerUnsupported } from './settings.ts';
+import { SETTING_RANGES, addressProblem, checkPrefix, softMarkerUnsupported } from './settings.ts';
+import type { NumberRule } from './settings.ts';
+export { checkPrefix } from './settings.ts';
+export type { NumberRule } from './settings.ts';
 import { remoteHostWarning } from './util/loopback.ts';
 import type { HamsterSettings, LocalSettings } from './types.ts';
 import { SPEECH_SETUP_COMMAND } from './project.ts';
@@ -52,8 +55,6 @@ const PROBE_OWN_STARTS = 12;
 const TOO_SLOW =
   'This pattern is too slow on a long line and would freeze typing. Avoid a repetition inside a repetition, such as (a+)+.';
 
-const ILLEGAL_IN_FILE_NAME = /[[\]#^|/\\:*?"<>\r\n]/;
-
 const OLLAMA_HERE = 'Where Ollama listens on this computer.';
 
 // Where Homebrew puts Node on Apple silicon: an example of what the field takes.
@@ -65,12 +66,6 @@ type TextKey = { [K in Keys<string>]: string extends HamsterSettings[K] ? K : ne
 type ChoiceKey = Exclude<Keys<string>, TextKey>;
 type NumberKey = Keys<number>;
 type ToggleKey = Keys<boolean>;
-
-export interface NumberRule {
-  min: number;
-  max: number;
-  integer?: boolean;
-}
 
 /** The number typed into a field, or null when it is not one the rule accepts. */
 export function parseNumber(text: string, rule: NumberRule): number | null {
@@ -294,23 +289,6 @@ export function describeOllamaAddress(address: string): { text: string; warning:
   };
 }
 
-function isHttpAddress(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-/** Why a companion prefix must not be saved, or null when it may. */
-export function checkPrefix(prefix: string): string | null {
-  if (prefix.trim() === '') return 'Enter a prefix. Companion notes are found by it.';
-  if (ILLEGAL_IN_FILE_NAME.test(prefix)) return 'A file name cannot contain [ ] # ^ | / \\ : * ? " < >';
-  if (prefix.startsWith('.')) return 'A file name that starts with a dot is hidden.';
-  return null;
-}
-
 /**
  * Folders as typed, one per line: as vault paths (Obsidian's normalizePath),
  * without duplicates. `/` is the whole vault. A line with a `.` or `..`
@@ -427,9 +405,9 @@ export class HamsterSettingTab extends PluginSettingTab {
         ),
         this.number(
           'Context size',
-          'Tokens the model reads at once, sent with every request. Changing it reloads the model in Ollama.',
+          'Tokens the model reads at once, sent with every request. At least 4096; 16384 recommended. Changing it reloads the model in Ollama.',
           'numCtx',
-          { min: 1024, max: 1048576, integer: true },
+          SETTING_RANGES.numCtx,
         ),
         this.text(
           'Embedding model',
@@ -442,13 +420,13 @@ export class HamsterSettingTab extends PluginSettingTab {
           'Embedding context size',
           'Tokens per passage. Changing it reloads the embedding model in Ollama.',
           'embedNumCtx',
-          { min: 128, max: 32768, integer: true },
+          SETTING_RANGES.embedNumCtx,
         ),
         this.number(
           'Embedding dimensions',
           'Length of each vector. After changing it, build the knowledge index again.',
           'embedDimensions',
-          { min: 32, max: 8192, integer: true },
+          SETTING_RANGES.embedDimensions,
         ),
       ]),
 
@@ -553,13 +531,13 @@ export class HamsterSettingTab extends PluginSettingTab {
           'Typing pause',
           'Milliseconds without typing before live enhance runs.',
           'enhanceDebounceMs',
-          { min: 200, max: 60000, integer: true },
+          SETTING_RANGES.enhanceDebounceMs,
         ),
         this.number(
           'Longest wait',
           'Milliseconds after which live enhance runs even while typing continues.',
           'enhanceMaxWaitMs',
-          { min: 500, max: 300000, integer: true },
+          SETTING_RANGES.enhanceMaxWaitMs,
         ),
       ]),
 
@@ -661,7 +639,7 @@ export class HamsterSettingTab extends PluginSettingTab {
           'Cost per 1,000 tokens',
           'In dollars. Used for the figure of what running on this computer saved.',
           'costPer1k',
-          { min: 0, max: 1000 },
+          SETTING_RANGES.costPer1k,
         ),
       ]),
 
@@ -718,10 +696,11 @@ export class HamsterSettingTab extends PluginSettingTab {
         field.setValue(this.deps.settings().ollamaUrl);
         field.onChange((raw) => {
           const value = raw.trim();
-          if (!isHttpAddress(value)) {
+          const problem = addressProblem(value);
+          if (problem !== null) {
             // Not saved: the last valid value stays in use, and it is the one described.
             delete this.held.ollamaUrl;
-            setting.setErrorMessage('Enter an address such as http://localhost:11434');
+            setting.setErrorMessage(problem);
             describe(this.deps.settings().ollamaUrl);
             return;
           }
