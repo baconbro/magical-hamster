@@ -3316,6 +3316,28 @@ describe('recording', () => {
     assert.deepEqual(env.state().turns, []);
   });
 
+  it('says once per recording that transcription has fallen far behind', async () => {
+    const env = await boot();
+    env.c.selectSection(JANE);
+    await env.c.startRecording();
+    const source = env.world.sources[0];
+    const behind = (): string[] => env.world.notes.notices.filter((notice) => notice.startsWith('Transcription is running'));
+    source.emit({ type: 'stats', rtf: 0.9, backlogMs: 12_000 });
+    assert.deepEqual(behind(), []);
+    source.emit({ type: 'stats', rtf: 1.6, backlogMs: 31_400 });
+    source.emit({ type: 'stats', rtf: 1.8, backlogMs: 58_000 });
+    assert.deepEqual(behind(), [
+      'Transcription is running 31 s behind: the computer is busy. It catches up by itself; stopping and starting the recording again drops the backlog.',
+    ]);
+
+    // The next recording starts with an empty queue, and warns again if it builds one.
+    await until(env.world, env.c.stopRecording());
+    await env.c.startRecording();
+    env.world.sources[1].emit({ type: 'stats', rtf: 1.5, backlogMs: 30_000 });
+    assert.equal(behind().length, 2);
+    assert.match(behind()[1], /^Transcription is running 30 s behind/);
+  });
+
   it('keeps recording when the transcript is lost', async () => {
     const env = await boot();
     env.c.selectSection(JANE);

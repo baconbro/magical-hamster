@@ -135,6 +135,10 @@ const NO_LINK_LINE = 'no line is added to the daily note';
    STT_NOT_INSTALLED_FALLBACK in ui/components/banner.ts). */
 const TRANSCRIPT_LOST = 'Transcription stopped. The recording continues without a transcript.';
 const TRANSCRIPT_NOT_INSTALLED = 'Transcription is not installed on this Mac.';
+/* The worker's queue is unbounded by design (protocol/segments.md): on a busy computer the
+   transcript falls behind the room and catches up later. Said once per recording from this far
+   behind, so that the user knows why the lines lag and what would shed the backlog. */
+const BACKLOG_WARN_MS = 30_000;
 const CLOSING = 'Magical Hamster is restarting: that was not done. Try again in a moment.';
 const LINK_NOT_ADDED = 'The link to the companion note could not be added to your daily note.';
 /* A key no section has: asks the parser which section holds a link, whatever its heading says today. */
@@ -519,6 +523,8 @@ class MeetingSession implements HamsterSession {
   private readonly warned = new Set<string>();
   /** The user was told that this recording has lost its transcript. */
   private transcriptLossSaid = false;
+  /** The user was told, in this recording, that transcription has fallen far behind. */
+  private backlogWarned = false;
   private ticker: unknown = null;
   private ticking = false;
   private recordingSince = 0;
@@ -1969,6 +1975,7 @@ class MeetingSession implements HamsterSession {
     this.lastFinal.clear();
     // What a source was still hearing belongs to this meeting or to none: not to the next one.
     this.openPartial = null;
+    this.backlogWarned = false;
     this.savedTurns = 0;
     this.takenTurns = 0;
     this.writtenTurns = 0;
@@ -3183,6 +3190,8 @@ class MeetingSession implements HamsterSession {
     }
     // Only now: the worker's last finals arrive during the stop.
     this.detachSource();
+    // The next recording starts with an empty queue: a backlog there is news again.
+    this.backlogWarned = false;
     await this.capped(this.transcriptIndex.flush(), INDEX_FLUSH_CAP_MS);
     if (this.closed) return;
 
@@ -3312,6 +3321,15 @@ class MeetingSession implements HamsterSession {
       if (message !== '' && !this.warned.has(event.code)) {
         this.warned.add(event.code);
         this.notice(message);
+      }
+      return;
+    }
+    if (event.type === 'stats') {
+      if (!this.backlogWarned && event.backlogMs >= BACKLOG_WARN_MS) {
+        this.backlogWarned = true;
+        this.notice(
+          `Transcription is running ${Math.round(event.backlogMs / 1000)} s behind: the computer is busy. It catches up by itself; stopping and starting the recording again drops the backlog.`,
+        );
       }
       return;
     }

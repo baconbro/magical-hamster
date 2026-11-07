@@ -532,6 +532,8 @@ function installDom(t: TestContext, script: DomScript = {}) {
     readonly sampleRate: number;
     readonly destination = new FakeAudioNode('destination');
     state: 'suspended' | 'running' | 'closed' = 'suspended';
+    onstatechange: (() => void) | null = null;
+    resumes = 0;
     source: FakeAudioNode | null = null;
     gain: (FakeAudioNode & { gain: { value: number } }) | null = null;
     readonly audioWorklet = {
@@ -548,13 +550,21 @@ function installDom(t: TestContext, script: DomScript = {}) {
       dom.contexts.push(this);
     }
     resume(): Promise<void> {
+      this.resumes += 1;
       if (script.neverResumes) return new Promise<void>(() => {});
       this.state = 'running';
+      this.onstatechange?.();
       return Promise.resolve();
     }
     close(): Promise<void> {
       this.state = 'closed';
+      this.onstatechange?.();
       return script.neverCloses ? new Promise<void>(() => {}) : Promise.resolve();
+    }
+    /** The system suspends the context (sleep, a change of output device), which it says through `statechange`. */
+    suspend(): void {
+      this.state = 'suspended';
+      this.onstatechange?.();
     }
     createMediaStreamSource(stream: FakeStream): FakeAudioNode {
       assert.ok(dom.streams.includes(stream));
@@ -603,6 +613,7 @@ function captureLog() {
 }
 
 const DENIED = 'Microphone access was denied. Allow Obsidian in System Settings, Privacy & Security, Microphone.';
+const SUSPENDED = 'Audio capture was suspended by the system. Stop the recording and start it again.';
 
 test('capture asks for the chosen device, mono, with no processing', async (t) => {
   const dom = installDom(t);
@@ -834,6 +845,70 @@ test('capture reports a worklet that broke', async (t) => {
   dom.worklets[0].onprocessorerror?.();
   assert.deepEqual(log.errors, ['Audio capture stopped unexpectedly.']);
   await mic.stop();
+});
+
+test('capture resumes a context the system suspended, once, and gives up the second time', async (t) => {
+  const dom = installDom(t);
+  const log = captureLog();
+  const mic = await startMicCapture(log.opts());
+  const ctx = dom.contexts[0];
+  assert.equal(ctx.resumes, 1);
+  dom.worklets[0].post(Int16Array.from([1]), 0.3);
+
+  // Sleep, or a change of output device: the graph stops without a word.
+  ctx.suspend();
+  await settle();
+  assert.equal(ctx.resumes, 2);
+  assert.equal(ctx.state, 'running');
+  assert.deepEqual(log.errors, []);
+  dom.worklets[0].post(Int16Array.from([2]), 0.5);
+  assert.deepEqual(log.blocks, [[1], [2]]);
+  assert.equal(mic.level(), 0.5);
+
+  ctx.suspend();
+  assert.equal(ctx.resumes, 2, 'not tried a second time');
+  assert.deepEqual(log.errors, [SUSPENDED]);
+  assert.equal(mic.level(), 0, 'the meter does not freeze on the last peak');
+  dom.worklets[0].post(Int16Array.from([3]), 0.7);
+  assert.deepEqual(log.blocks, [[1], [2]], 'nothing more is delivered');
+
+  await mic.stop();
+  assert.equal(ctx.onstatechange, null);
+  assert.equal(ctx.state, 'closed');
+  assert.equal(log.errors.length, 1, 'closing it is not a suspension');
+});
+
+test('capture gives up on a context the system closed, or that will not resume', async (t) => {
+  const closing = installDom(t);
+  const closedLog = captureLog();
+  const closed = await startMicCapture(closedLog.opts());
+  closing.contexts[0].state = 'closed';
+  closing.contexts[0].onstatechange?.();
+  assert.deepEqual(closedLog.errors, [SUSPENDED]);
+  await closed.stop();
+
+  const dom = installDom(t);
+  type Ctx = (typeof dom.contexts)[number];
+  const Real = globals.AudioContext as new (options?: AudioContextOptions) => Ctx;
+  globals.AudioContext = class extends Real {
+    resume(): Promise<void> {
+      // The first resume is the start's; the one after the suspension is refused.
+      if (this.resumes > 0) {
+        this.resumes += 1;
+        return Promise.reject(domError('InvalidStateError', 'Cannot resume a closed AudioContext.'));
+      }
+      return super.resume();
+    }
+  };
+  const log = captureLog();
+  const mic = await startMicCapture(log.opts());
+  dom.contexts[0].suspend();
+  await settle();
+  assert.equal(dom.contexts[0].resumes, 2);
+  assert.deepEqual(log.errors, [SUSPENDED]);
+  assert.equal(mic.level(), 0);
+  await mic.stop();
+  assert.equal(log.errors.length, 1);
 });
 
 test('capture stop releases everything, once, and silences the callbacks', async (t) => {
