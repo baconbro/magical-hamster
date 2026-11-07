@@ -16,9 +16,17 @@
  * specificity, so a utility still weighs 0-1-0 against the reset and against
  * the other utilities. It works on a descendant of the root, not on the root
  * element itself, which carries none.
+ *
+ * And the theme. Tailwind writes the theme variables a utility uses to
+ * `:root`, which in Obsidian is the whole app's. `inline` puts Tailwind's own
+ * values (spacing, text sizes, radii) into the utilities themselves, and
+ * `reference` writes nothing to `:root`. The plugin's own tokens are declared
+ * the same way by the build (src/styles/tailwind.ts) and set on `.mh-root`.
+ * Animations are the plugin's own too (`mh-pulse`, `mh-fade`, `mh-spin`):
+ * Tailwind's `animate-*` utilities would add a global `@keyframes spin`.
  * ------------------------------------------------------------------------ */
 
-@import "tailwindcss/theme.css";
+@import "tailwindcss/theme.css" theme(inline reference);
 @import "./reset.css";
 @import "./theme.css";
 @import "./markdown.css";
@@ -38,8 +46,11 @@
 @keyframes mh-fade { from { opacity: 0; transform: translateY(3px) } to { opacity: 1; transform: none } }
 .mh-root .mh-fade { animation: mh-fade .18s ease both; }
 
+@keyframes mh-spin { to { transform: rotate(360deg) } }
+.mh-root .mh-spin { animation: mh-spin 1s linear infinite; }
+
 @media (prefers-reduced-motion: reduce) {
-  .mh-root .mh-pulse, .mh-root .mh-fade { animation: none; }
+  .mh-root .mh-pulse, .mh-root .mh-fade, .mh-root .mh-spin { animation: none; }
 }
 
 /* The first-write confirmation is Obsidian's own Modal, outside `.mh-root`: its root is `.mh-modal`. */

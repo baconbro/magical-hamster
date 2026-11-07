@@ -1,9 +1,10 @@
 import { useEffect, useId, type JSX } from 'react';
 import type { TabId } from '../types.ts';
 import { Banner } from './components/Banner.tsx';
+import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { Header } from './components/Header.tsx';
 import { TabBar } from './components/TabBar.tsx';
-import { panelDomId, tabDomId } from './components/tabList.ts';
+import { panelDomId, TABS, tabDomId } from './components/tabList.ts';
 import { useController, useDebugOn, useHamster } from './context.tsx';
 import { AskTab } from './tabs/Ask.tsx';
 import { DebugTab } from './tabs/Debug.tsx';
@@ -39,6 +40,7 @@ export function App() {
   }, [chosen, debugOn, controller]);
   const idPrefix = useId();
   const Panel = PANELS[tab];
+  const name = TABS.find((t) => t.id === tab)?.label ?? tab;
 
   return (
     /* `relative`: the screen-reader-only texts are absolutely positioned, and
@@ -56,7 +58,8 @@ export function App() {
           too, as a last resort: in a short leaf the pinned parts of a tab (an
           input, a row of buttons) can be taller than what is left, and without
           this they would be cut off with no way to reach them. Keyed by tab so
-          that one tab's scroll offset is not handed to the next. */}
+          that one tab's scroll offset is not handed to the next, and so that a
+          tab that threw is drawn afresh when it is chosen again. */}
       <div
         key={tab}
         role="tabpanel"
@@ -64,7 +67,11 @@ export function App() {
         aria-labelledby={tabDomId(idPrefix, tab)}
         className="relative flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto"
       >
-        <Panel />
+        {/* A tab that throws is said to, here, under a tab bar that still works: the others stay
+            reachable, and the session is not touched. */}
+        <ErrorBoundary label={`The ${name} tab`}>
+          <Panel />
+        </ErrorBoundary>
       </div>
     </div>
   );

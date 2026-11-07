@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
-import { test } from 'node:test';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { describe, test } from 'node:test';
 import { TAILWIND_DIRECTIVES, withDirectives } from '../src/styles/tailwind.ts';
 
 /* Obsidian loads the plugin's stylesheet for the whole app. A rule that does not
    name the plugin's own root restyles notes, other plugins and Obsidian itself,
-   so the sources are read here the way the build reads them. */
+   so the sources are read here the way the build reads them, and the built
+   stylesheet, which holds what Tailwind adds, is read when there is one. */
 
 const STYLES = new URL('../src/styles/', import.meta.url);
+const DIST = new URL('../dist/styles.css', import.meta.url);
 
 const withoutComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, '');
 
@@ -113,4 +115,94 @@ test('styles: the build adds the directives right after the @import lines, where
   assert.ok(css.indexOf('@tailwind utilities') < css.indexOf('.mh-root .x'));
   assert.ok(css.includes(TAILWIND_DIRECTIVES));
   assert.throws(() => withDirectives('.mh-root .x { color: red; }'), /no @import/);
+});
+
+/* What Tailwind adds is only in the built file: the theme variables it writes to `:root` for the
+   utilities it generates, the `@property` registrations of its `--tw-*` variables, and a global
+   `@keyframes` for each `animate-*` utility. In Obsidian `:root` is the whole app's, so the plugin's
+   tokens are set on `.mh-root` and Tailwind's own values go into the utilities themselves (styles.css).
+   The `@property` rules stay: they register names no other stylesheet sets, and a registration
+   repeated by another plugin built with Tailwind is the same one. */
+describe('styles: the built stylesheet', { skip: existsSync(DIST) ? false : 'dist/styles.css is missing: run pnpm build first' }, () => {
+  const built = (): string => withoutComments(readFileSync(DIST, 'utf8'));
+  const scoped = (selector: string): boolean =>
+    selector.includes('.mh-root') || selector.includes('.mh-view') || selector.includes('.mh-modal');
+  /** Every rule, at the top level and inside each at-rule that holds rules, with where it was found. */
+  const everyRule = (css: string): Array<{ rule: Rule; inside: string[] }> => {
+    const found: Array<{ rule: Rule; inside: string[] }> = [];
+    const walk = (block: string, inside: string[]): void => {
+      for (const rule of rulesOf(block)) {
+        found.push({ rule, inside });
+        if (/^@(media|supports|layer|container)\b/.test(rule.prelude)) walk(rule.body, [...inside, rule.prelude]);
+      }
+    };
+    walk(css, []);
+    return found;
+  };
+
+  test('nothing is set on :root or :host, where every window of Obsidian would read it', () => {
+    const css = built();
+    assert.deepEqual(
+      everyRule(css)
+        .filter(({ rule }) => /:root|:host/.test(rule.prelude))
+        .map(({ rule }) => rule.prelude),
+      [],
+    );
+    /* The tokens are set on the plugin's root instead, from Obsidian's, so theming still works.
+       The minifier splits the block of theme.css: a token whose value is a color-mix() gets a
+       plain fallback and a copy of its own under @supports, so all the `.mh-root` rules together
+       are the declarations. */
+    const declarations = everyRule(css)
+      .filter(({ rule }) => rule.prelude === '.mh-root')
+      .map(({ rule }) => rule.body)
+      .join(';');
+    for (const token of ['--color-surface', '--color-ink', '--color-line', '--color-danger', '--font-mono']) {
+      assert.match(declarations, new RegExp(`${token}:(var|color-mix)\\(`), token);
+    }
+    /* Tailwind's own values went into the utilities: nothing reads a `:root` variable that is no
+       longer there. What is read is set on `.mh-root`, is Obsidian's, or is a `--tw-*` of
+       Tailwind's own, which a utility sets or reads with its fallback written in. */
+    const read = new Set([...css.matchAll(/var\((--[\w-]+)/g)].map((m) => m[1]));
+    const declared = new Set([...declarations.matchAll(/(--[\w-]+):/g)].map((m) => m[1]));
+    const obsidian = (name: string): boolean => /^--(background|text|interactive|font|size|mh)-/.test(name);
+    assert.deepEqual(
+      [...read].filter((name) => !declared.has(name) && !name.startsWith('--tw-') && !obsidian(name)),
+      [],
+    );
+  });
+
+  test('every rule names the plugin root, and every @keyframes is the plugin\'s own', () => {
+    const css = built();
+    const loose: string[] = [];
+    for (const { rule, inside } of everyRule(css)) {
+      if (rule.prelude.startsWith('@')) continue;
+      if (scoped(rule.prelude)) continue;
+      /* Tailwind's one fallback for a browser without @property: every `--tw-*` set to its
+         initial value on everything, behind a @supports that Electron does not match. Inert as
+         long as it sets nothing but Tailwind's own variables. */
+      const fallback = inside[0] === '@layer properties' && inside.some((at) => at.startsWith('@supports'));
+      const onlyTw = rule.body.split(';').every((declaration) => declaration.trim() === '' || /^--tw-[\w-]+:/.test(declaration.trim()));
+      if (fallback && onlyTw) continue;
+      loose.push(`${inside.join(' > ')} > ${rule.prelude}`);
+    }
+    assert.deepEqual(loose, []);
+
+    const keyframes = [...css.matchAll(/@keyframes\s+([\w-]+)/g)].map((m) => m[1]);
+    assert.ok(keyframes.includes('mh-spin'), 'the spinner');
+    assert.deepEqual(
+      keyframes.filter((name) => !name.startsWith('mh-')),
+      [],
+    );
+  });
+
+  test('the utilities are inside :where(.mh-root) and read the tokens from it', () => {
+    const css = built();
+    assert.match(css, /:where\(\.mh-root\) \.bg-surface\{background-color:var\(--color-surface[,)]/);
+    assert.match(css, /:where\(\.mh-root\) \.text-danger\{color:var\(--color-danger[,)]/);
+    assert.match(css, /:where\(\.mh-root\) \.font-mono\{font-family:var\(--font-mono[,)]/);
+    assert.match(css, /\.mh-root \.mh-spin\{animation:[^}]*mh-spin/);
+    /* Every utility: not one generated for the whole app by mistake. */
+    const bare = rulesOf(css).filter((rule) => /^\.[\w\\:/.-]+$/.test(rule.prelude) && !scoped(rule.prelude));
+    assert.deepEqual(bare.map((rule) => rule.prelude), []);
+  });
 });

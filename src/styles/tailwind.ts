@@ -12,8 +12,10 @@ import type { Plugin } from 'vite';
    against the other utilities. It works on a descendant of the root, not on the root element
    itself, which carries none. `@source` points at src/, relative to styles.css.
 
-   The colours in @theme only make Tailwind generate the utilities (bg-surface, text-muted...); the
-   real values are set on `.mh-root` in theme.css, from the reader's Obsidian theme. */
+   The tokens in @theme only make Tailwind generate the utilities (bg-surface, text-muted,
+   font-mono...), which read them as var(--color-surface) and so on; the real values are set on
+   `.mh-root` in theme.css, from the reader's Obsidian theme. `reference` keeps Tailwind from
+   writing these placeholder values to `:root` as well, which would reach the whole app. */
 export const TAILWIND_DIRECTIVES = `
 :where(.mh-root) {
   @tailwind utilities;
@@ -23,7 +25,7 @@ export const TAILWIND_DIRECTIVES = `
 
 @custom-variant dark (&:where(.mh-root.dark, .mh-root.dark *));
 
-@theme {
+@theme reference {
   /* Obsidian's own monospace font (the \`font-mono\` utility), not Tailwind's default stack. */
   --font-mono: var(--font-monospace, SFMono-Regular, Menlo, monospace);
   --color-surface: #ffffff;

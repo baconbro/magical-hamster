@@ -12,6 +12,7 @@ import {
   remoteMessage,
   type BannerInputs,
 } from '../src/ui/components/banner.ts';
+import { errorMessageOf } from '../src/ui/components/errorText.ts';
 import {
   bulletMarkdown,
   compact,
@@ -495,6 +496,27 @@ test('format: the folder picker has a row for every indexed folder, listed by th
   }
   const order = paths(['/']);
   assert.deepEqual(minimalFolders(new Set(['20 Other']), order), ['20 Other']);
+});
+
+test('errorMessageOf: the text of whatever a render threw, never blank', () => {
+  assert.equal(errorMessageOf(new Error("Cannot read properties of undefined (reading 'turns')")), "Cannot read properties of undefined (reading 'turns')");
+  assert.equal(errorMessageOf(new RangeError('Invalid array length')), 'Invalid array length');
+  assert.equal(errorMessageOf('plain text'), 'plain text');
+  /* The LLM and retrieval layers raise plain objects with a message of their own. */
+  assert.equal(errorMessageOf({ kind: 'busy', message: 'Ollama is busy' }), 'Ollama is busy');
+  assert.equal(errorMessageOf(42), '42');
+  assert.equal(errorMessageOf(false), 'false');
+  /* Around the message only: a stray line break would be shown. */
+  assert.equal(errorMessageOf(new Error('  spaced \n')), 'spaced');
+  /* Nothing to say reads as something, not as a blank after the colon. */
+  assert.equal(errorMessageOf(new Error('')), 'Unknown error');
+  assert.equal(errorMessageOf(new Error('   ')), 'Unknown error');
+  assert.equal(errorMessageOf(''), 'Unknown error');
+  assert.equal(errorMessageOf(null), 'Unknown error');
+  assert.equal(errorMessageOf(undefined), 'Unknown error');
+  assert.equal(errorMessageOf({ message: 7 }), '[object Object]');
+  /* An object that cannot be written out does not throw a second time inside the fallback. */
+  assert.equal(errorMessageOf(Object.create(null)), 'Unknown error');
 });
 
 test('levelBars reads the microphone in decibels: ordinary speech lights more than one bar', () => {
