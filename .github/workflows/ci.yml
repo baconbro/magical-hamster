@@ -31,7 +31,7 @@ jobs:
         with:
           # Nothing here pushes: the token has no business in .git/config while packages run.
           persist-credentials: false
-      - uses: pnpm/action-setup@v4 # v4
+      - uses: pnpm/action-setup@v6 # v4
       - uses: actions/setup-node@v5 # v5
         with:
           node-version: 24
