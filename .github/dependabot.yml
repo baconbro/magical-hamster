@@ -1,0 +1,18 @@
+# One pull request a week for the actions the workflows use, and one for the npm packages, all
+# of them together so that a single CI run covers them. No commit-message prefix: Dependabot's
+# own "Bump x from a to b" is already a plain sentence, which is how commits read here, and a
+# prefix would put "name:" in front of it.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      all:
+        patterns:
+          - '*'

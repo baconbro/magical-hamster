@@ -595,3 +595,54 @@ describe(
     });
   },
 );
+
+describe('release-notes, the notes of a release from CHANGELOG.md', () => {
+  const notes = script('release-notes.mjs');
+
+  it('takes the section of one version, and nothing for a version that is not there', async () => {
+    const { sectionOf } = (await import(pathToFileURL(notes).href)) as {
+      sectionOf: (changelog: string, version: string) => string;
+    };
+    const changelog = [
+      '# Changelog',
+      '',
+      '## [Unreleased]',
+      '',
+      '- Something under way.',
+      '',
+      '## [0.1.4] - 2026-11-06',
+      '',
+      '### Fixed',
+      '',
+      '- One thing.',
+      '- Another, with a `## ` in a code span that is not a heading.',
+      '',
+      '## [0.1.3] - 2026-11-06',
+      '',
+      '- Older.',
+      '',
+    ].join('\n');
+    assert.equal(sectionOf(changelog, '0.1.4'), '### Fixed\n\n- One thing.\n- Another, with a `## ` in a code span that is not a heading.');
+    assert.equal(sectionOf(changelog, '0.1.3'), '- Older.', 'the last section runs to the end');
+    assert.equal(sectionOf(changelog, 'Unreleased'), '- Something under way.');
+    assert.equal(sectionOf(changelog, '0.1'), '', 'the closing bracket is part of the match');
+    assert.equal(sectionOf(changelog, '9.9.9'), '');
+    assert.equal(sectionOf(changelog.replaceAll('\n', '\r\n'), '0.1.3'), '- Older.', 'a changelog with Windows line ends');
+  });
+
+  it('prints the section of a version the repository released, and nothing for one it did not', () => {
+    const changelog = readFileSync(join(REPO, 'CHANGELOG.md'), 'utf8');
+    const released = /^## \[(\d+\.\d+\.\d+)\]/m.exec(changelog)?.[1];
+    assert.ok(released, 'CHANGELOG.md has a released version');
+    // From elsewhere: the changelog is the one beside the script, not one in the current directory.
+    const run = spawnSync(process.execPath, [notes, released], { encoding: 'utf8', cwd: tmpdir() });
+    assert.equal(run.status, 0, run.stderr);
+    assert.ok(run.stdout.trim().length > 0, 'the section has text');
+    assert.ok(changelog.includes(run.stdout.trim()), 'the text is the changelog\'s');
+    assert.doesNotMatch(run.stdout, /^## /m, 'no heading of another version');
+
+    const none = spawnSync(process.execPath, [notes, '0.0.0'], { encoding: 'utf8', cwd: tmpdir() });
+    assert.equal(none.status, 0, none.stderr);
+    assert.equal(none.stdout, '', 'not even a newline: the workflow tests the file for content');
+  });
+});
