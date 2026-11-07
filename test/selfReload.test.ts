@@ -198,7 +198,7 @@ describe('startSelfReload', () => {
     t.folder.settle();
     assert.equal(t.reloads(), 0);
     assert.deepEqual(t.notices, [
-      'A new build of Magical Hamster is installed. It loads once this meeting is over: stop the recording, then press End or open another meeting.',
+      'A new build is installed. It loads once this meeting is over: stop the recording, then press End or open another meeting.',
     ]);
 
     t.folder.change('main.js', build(3));

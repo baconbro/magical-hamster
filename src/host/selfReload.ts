@@ -104,7 +104,7 @@ export function startSelfReload(opts: SelfReloadOptions): { mark: string; dispos
     if (reason !== null) {
       // Said once, and again if it comes to wait for the meeting: the reason that lasts.
       if (waitingFor === null || (reason === MEETING_OPEN && waitingFor !== MEETING_OPEN)) {
-        opts.notify(`A new build of Magical Hamster is installed. It loads once ${reason}.`);
+        opts.notify(`A new build is installed. It loads once ${reason}.`);
       }
       waitingFor = reason;
       unsubscribe ??= opts.subscribe(() => {

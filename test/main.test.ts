@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire, registerHooks } from 'node:module';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -25,8 +25,21 @@ interface Recorded {
   sessions: FakeSession[];
   views: Array<{ type: string; factory: (leaf: object) => { getProps(): { host: UiHost } } }>;
   tabs: object[];
+  commands: Array<{ id: string; name: string }>;
+  ribbons: Array<{ icon: string; title: string }>;
+  /** Event, DOM event and interval registrations: what onunload hands back to Obsidian. */
+  registrations: number;
 }
-const record: Recorded = { notices: [], rendered: [], sessions: [], views: [], tabs: [] };
+const record: Recorded = {
+  notices: [],
+  rendered: [],
+  sessions: [],
+  views: [],
+  tabs: [],
+  commands: [],
+  ribbons: [],
+  registrations: 0,
+};
 (globalThis as { __hamsterMain?: Recorded }).__hamsterMain = record;
 
 // Moment is a dependency of the `obsidian` package, not of this repository.
@@ -55,19 +68,19 @@ export class PluginSettingTab {
   hide() {}
 }
 export class FileSystemAdapter {}
-// What a plugin gets from Obsidian: its data.json, and places to register things.
+// What a plugin gets from Obsidian: its data.json, its manifest, and places to register things.
 export class Plugin {
-  constructor(app, data) { this.app = app; this.data = data; }
+  constructor(app, data, manifest) { this.app = app; this.data = data; this.manifest = manifest; }
   async loadData() { return this.data === null ? null : structuredClone(this.data); }
   async saveData(data) { this.data = structuredClone(data); }
   registerView(type, factory) { record.views.push({ type, factory }); }
   addSettingTab(tab) { record.tabs.push(tab); }
   registerEditorExtension() {}
-  addRibbonIcon() {}
-  addCommand() {}
-  registerEvent() {}
-  registerDomEvent() {}
-  registerInterval() {}
+  addRibbonIcon(icon, title) { record.ribbons.push({ icon, title }); }
+  addCommand(command) { record.commands.push({ id: command.id, name: command.name }); }
+  registerEvent() { record.registrations += 1; }
+  registerDomEvent() { record.registrations += 1; }
+  registerInterval() { record.registrations += 1; }
 }
 export function normalizePath(path) {
   const clean = path.replace(/[\\\\/]+/g, '/').replace(/^\\/+|\\/+$/g, '');
@@ -90,8 +103,8 @@ export function createSession(deps) {
     handleDailyAvailability: note('handleDailyAvailability'),
     handleVaultChange: note('handleVaultChange'),
     handleSettingsChange: note('handleSettingsChange'),
-    flushAll: async () => undefined,
-    dispose: async () => undefined,
+    flushAll: async () => { calls.push(['flushAll']); },
+    dispose: async () => { calls.push(['dispose']); },
   };
   record.sessions.push(session);
   return session;
@@ -153,7 +166,16 @@ interface TabDeps {
   local(): LocalSettings;
   setLocal(patch: Partial<LocalSettings>): void;
   runtimeDir(): string;
+  speechSetupCommand: string;
+  pluginVersion: string | null;
 }
+
+/** What manifest.json gives Obsidian, as far as main.ts reads it. */
+interface Manifest {
+  id: string;
+  version?: string;
+}
+const MANIFEST: Manifest = { id: 'magical-hamster', version: '0.1.5' };
 
 /**
  * The plugin, loaded over the given data.json and device settings, as far as
@@ -164,16 +186,25 @@ async function load(
   data: Partial<HamsterSettings> | null = null,
   local: Partial<LocalSettings> = {},
   storage = new Map<string, unknown>(),
+  /** Paths the vault's adapter says exist: Obsidian's config files, and the plugin's own data.json. */
+  onDisk: string[] = [],
+  manifest: Manifest | null = MANIFEST,
 ) {
   record.notices.length = 0;
   record.rendered.length = 0;
+  record.commands.length = 0;
+  record.ribbons.length = 0;
+  record.registrations = 0;
   storage.set(LOCAL_KEY, local);
   const ready: Array<() => void> = [];
   const listen = (): object => ({});
   const app = {
     vault: {
       configDir: '.obsidian',
-      adapter: { exists: async (): Promise<boolean> => false, read: async (): Promise<string> => '' },
+      adapter: {
+        exists: async (path: string): Promise<boolean> => onDisk.includes(path),
+        read: async (): Promise<string> => '',
+      },
       on: listen,
       getName: (): string => 'Test Vault',
       getFileByPath: (): null => null,
@@ -197,13 +228,14 @@ async function load(
       storage.set(key, value);
     },
   };
-  const Plugin = MagicalHamsterPlugin as unknown as new (app: object, data: object | null) => {
+  const Plugin = MagicalHamsterPlugin as unknown as new (app: object, data: object | null, manifest: Manifest | null) => {
     data: Partial<HamsterSettings> | null;
     settings: HamsterSettings;
     onload(): Promise<void>;
+    onunload(): void;
     onExternalSettingsChange(): Promise<void>;
   };
-  const plugin = new Plugin(app, data);
+  const plugin = new Plugin(app, data, manifest);
   await plugin.onload();
   const session = record.sessions.at(-1);
   const view = record.views.at(-1);
@@ -230,6 +262,70 @@ async function load(
 const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 /* Read through a function: an assertion that the list is empty would otherwise narrow it for the rest of a test. */
 const notices = (): Recorded['notices'] => record.notices;
+
+describe('main: the commands, the ribbon and unload', () => {
+  it('registers these commands, in sentence case and without the plugin name', async () => {
+    await load();
+    assert.deepEqual(record.commands, [
+      { id: 'open', name: 'Open sidebar' },
+      { id: 'use-this-note', name: 'Use the open note for the meeting' },
+      { id: 'write-meeting-into-note', name: 'Write the meeting into the open note' },
+      { id: 'toggle-debug-tab', name: 'Show or hide the model exchange log' },
+      { id: 'toggle-recording', name: 'Start or stop recording' },
+      { id: 'new-meeting', name: 'New meeting' },
+      { id: 'create-companion', name: 'Create companion note' },
+      { id: 'enhance-now', name: 'Enhance notes now' },
+    ]);
+    for (const { id, name } of record.commands) {
+      assert.doesNotMatch(id, /hamster|command/i, id);
+      assert.doesNotMatch(name, /hamster|command/i, name);
+      assert.match(name, /^[A-Z][^A-Z]*$|^[A-Z]/, `${name} starts with one capital`);
+    }
+    assert.deepEqual(record.ribbons, [{ icon: 'audio-lines', title: 'Open Magical Hamster' }]);
+    assert.ok(record.registrations >= 10, 'the workspace, vault and metadata events are registered with Obsidian');
+  });
+
+  it('unload closes the session once, and a load after it registers nothing more', async () => {
+    const t = await load();
+    const before = t.session.calls.filter(([name]) => name === 'dispose').length;
+    t.plugin.onunload();
+    assert.equal(t.session.calls.filter(([name]) => name === 'dispose').length, before + 1);
+    t.plugin.onunload();
+    assert.equal(t.session.calls.filter(([name]) => name === 'dispose').length, before + 1, 'the session is let go of');
+
+    // Obsidian turned the plugin off while onload was still reading: nothing may stay registered.
+    const views = record.views.length;
+    const commands = record.commands.length;
+    await t.plugin.onload();
+    assert.equal(record.views.length, views);
+    assert.equal(record.commands.length, commands);
+  });
+});
+
+describe('main: the settings file', () => {
+  const unreadable = (): Recorded['notices'] => notices().filter((n) => /settings file/.test(n.message));
+
+  it('says once, and keeps saying, when data.json is there but could not be read', async () => {
+    // Obsidian answers null for a file it cannot parse, as for none at all.
+    await load(null, {}, new Map(), ['.obsidian/plugins/magical-hamster/data.json']);
+    assert.equal(unreadable().length, 1);
+    assert.match(unreadable()[0].message, /^Magical Hamster: The settings file .*could not be read/);
+    assert.equal(unreadable()[0].ms, 0, 'stays up until dismissed');
+  });
+
+  it('says nothing on a first start, when there is no data.json yet', async () => {
+    await load(null);
+    assert.equal(unreadable().length, 0);
+  });
+
+  it('checks every field: a synced data.json with a wrong type leaves the default in place', async () => {
+    const t = await load({ numCtx: '16384' as unknown as number, micLabel: null as unknown as string });
+    assert.equal(t.plugin.settings.numCtx, DEFAULT_SETTINGS.numCtx);
+    assert.equal(t.plugin.settings.micLabel, DEFAULT_SETTINGS.micLabel);
+    await t.sync({ indexedFolders: 'x' as unknown as string[] });
+    assert.deepEqual(t.plugin.settings.indexedFolders, []);
+  });
+});
 
 describe('main: the runtime folder of the stats and the index', () => {
   const stats: Stats = {
@@ -274,6 +370,46 @@ describe('main: the runtime folder of the stats and the index', () => {
     await t.session.deps.statsIO.save(stats);
 
     assert.equal(existsSync(join(moved, 'stats.json')), false);
+  });
+
+  it('sweeps the temporary file of a save that was cut short before it reads the index', async () => {
+    const started = join(scratchDir(), 'runtime');
+    const t = await load(null, { runtimeDir: started });
+    const io = t.session.deps.vaultIndexIO;
+    assert.ok(io, 'the plugin gives the session an index');
+    await io.save('{"v":2}', new Uint8Array([1, 2, 3]));
+    const [dir] = readdirSync(join(started, 'index'));
+    // What writeFileAtomic leaves when Obsidian dies between its write and its rename.
+    const leftover = join(started, 'index', dir, 'index.json.x.tmp');
+    writeFileSync(leftover, '{');
+
+    assert.equal(await io.load().then((found) => found?.index), '{"v":2}');
+    assert.equal(existsSync(leftover), false);
+    assert.deepEqual(readdirSync(join(started, 'index', dir)).sort(), ['index.json', 'vectors.bin']);
+    // Before any save there is no folder to sweep and nothing to read: neither is an error.
+    const fresh = await load(null, { runtimeDir: join(scratchDir(), 'fresh') });
+    assert.equal(await fresh.session.deps.vaultIndexIO?.load(), null);
+  });
+});
+
+describe('main: the paths of this device, as the speech source gets them', () => {
+  it('expands a ~ in the Node path, which spawned as typed would be a relative path that exists nowhere', async () => {
+    const t = await load(null, { nodePath: '~/bin/node' });
+    assert.equal(t.session.deps.local().nodePath, join(homedir(), 'bin', 'node'));
+    assert.equal(t.tab.local().nodePath, '~/bin/node', 'the settings tab shows what was typed');
+
+    t.tab.setLocal({ nodePath: '' });
+    assert.equal(t.session.deps.local().nodePath, '', 'empty still means the Node the setup recorded');
+    t.tab.setLocal({ nodePath: '/opt/homebrew/bin/node' });
+    assert.equal(t.session.deps.local().nodePath, '/opt/homebrew/bin/node');
+  });
+
+  it('takes a relative runtime folder from the home directory, not from where Obsidian was started', async () => {
+    const t = await load(null, { runtimeDir: 'hamster-nowhere' });
+    assert.equal(t.session.deps.local().runtimeDir, join(homedir(), 'hamster-nowhere'));
+    assert.equal(t.tab.runtimeDir(), join(homedir(), 'hamster-nowhere'));
+    assert.equal(t.tab.local().runtimeDir, 'hamster-nowhere');
+    assert.equal(existsSync(join(homedir(), 'hamster-nowhere')), false, 'resolved, not created');
   });
 });
 
@@ -381,6 +517,30 @@ describe('main: the Markdown renderer handed to the sidebar', () => {
   });
 });
 
+describe('main: the speech setup command handed to the sidebar and the settings tab', () => {
+  it('names the release this plugin is, so that the worker installed is the one it was built with', async () => {
+    const t = await load();
+    const command = 'curl -fsSL https://github.com/baconbro/magical-hamster/releases/download/0.1.5/setup-speech.mjs -o setup-speech.mjs && node setup-speech.mjs';
+    assert.equal(t.host.speechSetupCommand, command);
+    assert.equal(t.tab.speechSetupCommand, command, 'the settings tab shows and copies the same one');
+    assert.equal(t.tab.pluginVersion, '0.1.5');
+  });
+
+  it('falls back to the latest release when the manifest gives no version, or not a release’s', async () => {
+    const latest = /\/releases\/latest\/download\/setup-speech\.mjs /;
+    const none = await load(null, {}, new Map(), [], { id: 'magical-hamster' });
+    assert.match(none.host.speechSetupCommand, latest);
+    assert.equal(none.tab.pluginVersion, null);
+
+    const dev = await load(null, {}, new Map(), [], { id: 'magical-hamster', version: '0.2.0-dev' });
+    assert.match(dev.host.speechSetupCommand, latest);
+    assert.equal(dev.tab.pluginVersion, '0.2.0-dev', 'still the version the runtime is compared with');
+
+    const absent = await load(null, {}, new Map(), [], null);
+    assert.match(absent.host.speechSetupCommand, latest);
+  });
+});
+
 describe('main: an Ollama address that is not this computer', () => {
   it('is announced when it arrives from another device, and stays on screen until read', async () => {
     const t = await load();
@@ -463,9 +623,10 @@ describe('main: a soft-marker pattern that did not come through the settings tab
     assert.equal(t.session.deps.settings().softMarkerPattern, '$^');
     assert.equal(notices().length, 2);
 
-    // A hand-edited data.json can hold something that is not text at all.
+    // A hand-edited data.json can hold something that is not text at all:
+    // parseSettings puts the shipped pattern in its place, which needs no check.
     await t.sync({ softMarkerPattern: 7 as unknown as string });
-    assert.equal(t.session.deps.settings().softMarkerPattern, '$^');
+    assert.equal(t.session.deps.settings().softMarkerPattern, DEFAULT_SETTINGS.softMarkerPattern);
     assert.equal(t.storage.has('magical-hamster:soft-marker-checked-2'), false);
   });
 

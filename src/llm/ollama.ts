@@ -55,6 +55,14 @@ const DEFAULT_BUSY_RETRIES = 3;
 const BACKOFF_BASE_MS = 1000;
 const ERROR_DETAIL_CHARS = 300;
 
+/* The address is the user's, so the server may be broken, or not Ollama at
+   all. The watchdog bounds how long a body may take; these bound how much of
+   it is held, so that it cannot fill memory first. A 16-vector embed batch is
+   about 200 KB; a line of a chat stream is one token. */
+const MAX_STREAM_LINE_BYTES = 1 << 20;
+const MAX_JSON_BODY_BYTES = 16 << 20;
+const MAX_ERROR_BODY_BYTES = 64 << 10;
+
 /* Nothing is streamed while the prompt is processed, so the wait for the
    first chunk has to grow with the prompt. */
 function defaultFirstTokenTimeoutMs(promptTokens: number): number {
@@ -221,6 +229,69 @@ function createGuard(clock: Clock, caller: AbortSignal | undefined, model: strin
   };
 }
 
+type BodyReader = ReadableStreamDefaultReader<Uint8Array>;
+
+/** One read from a body; a tripped guard and a lost connection are told apart. */
+async function readChunk(
+  reader: BodyReader,
+  guard: Guard,
+  model: string | null,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  let chunk: ReadableStreamReadResult<Uint8Array>;
+  try {
+    chunk = await guard.race(reader.read());
+  } catch (cause) {
+    throw (
+      guard.failure() ?? new OllamaError('unreachable', 'The connection to Ollama was lost.', { model, cause })
+    );
+  }
+  // A chunk that was already buffered wins the race against an abort.
+  const stopped = guard.failure();
+  if (stopped) throw stopped;
+  return chunk;
+}
+
+/**
+ * The body as text, read chunk by chunk rather than with `res.text()` so that
+ * no more than `maxBytes` of it is ever held. Past that, the text is cut there
+ * or the call fails, as the caller asks; either way the rest is not read.
+ */
+async function readTextUpTo(
+  res: Response,
+  guard: Guard,
+  maxBytes: number,
+  onOverflow: 'throw' | 'cut',
+  model: string | null,
+): Promise<string> {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  // Streaming mode: a multi-byte character may be cut by a chunk boundary.
+  const decoder = new TextDecoder();
+  let text = '';
+  let bytes = 0;
+  let ended = false;
+  try {
+    for (;;) {
+      const chunk = await readChunk(reader, guard, model);
+      if (chunk.done) {
+        ended = true;
+        break;
+      }
+      bytes += chunk.value.length;
+      if (bytes <= maxBytes) {
+        text += decoder.decode(chunk.value, { stream: true });
+        continue;
+      }
+      if (onOverflow === 'throw') throw protocolError('the body is too large.', model);
+      text += decoder.decode(chunk.value.subarray(0, chunk.value.length - (bytes - maxBytes)), { stream: true });
+      break;
+    }
+  } finally {
+    if (!ended) void reader.cancel().catch(() => {});
+  }
+  return text + decoder.decode();
+}
+
 export function createOllamaClient(opts: OllamaClientOptions): OllamaClient {
   const clock = opts.clock;
   const interChunkMs = opts.interChunkTimeoutMs ?? DEFAULT_INTER_CHUNK_MS;
@@ -231,8 +302,16 @@ export function createOllamaClient(opts: OllamaClientOptions): OllamaClient {
   const doFetch: typeof fetch = opts.fetch ?? ((input, init) => window.fetch(input, init));
 
   const baseUrl = (): string => {
-    const raw = typeof opts.baseUrl === 'function' ? opts.baseUrl() : opts.baseUrl;
-    return raw.trim().replace(/\/+$/, '');
+    const raw = (typeof opts.baseUrl === 'function' ? opts.baseUrl() : opts.baseUrl).trim();
+    /* Without a user name or password: fetch refuses an address that carries
+       them, and the "not reachable" message quotes the address. The settings
+       refuse such an address too; this covers one that arrived another way. */
+    try {
+      const url = new URL(raw);
+      return `${url.origin}${url.pathname}`.replace(/\/+$/, '');
+    } catch {
+      return raw.replace(/\/+$/, '');
+    }
   };
 
   async function guarded<T>(
@@ -263,7 +342,8 @@ export function createOllamaClient(opts: OllamaClientOptions): OllamaClient {
   async function httpError(res: Response, guard: Guard, model: string | null): Promise<OllamaError> {
     let body = '';
     try {
-      body = await guard.race(res.text());
+      // Only its first words reach the message: a cut body is as good as the whole.
+      body = await readTextUpTo(res, guard, MAX_ERROR_BODY_BYTES, 'cut', model);
     } catch {
       const stopped = guard.failure();
       if (stopped) return stopped;
@@ -335,15 +415,7 @@ export function createOllamaClient(opts: OllamaClientOptions): OllamaClient {
 
   async function readJson(res: Response, guard: Guard, model: string | null): Promise<Json> {
     guard.arm(interChunkMs);
-    let text: string;
-    try {
-      text = await guard.race(res.text());
-    } catch (cause) {
-      throw (
-        guard.failure() ??
-        new OllamaError('unreachable', 'The connection to Ollama was lost.', { model, cause })
-      );
-    }
+    const text = await readTextUpTo(res, guard, MAX_JSON_BODY_BYTES, 'throw', model);
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
@@ -404,18 +476,7 @@ export function createOllamaClient(opts: OllamaClientOptions): OllamaClient {
 
     try {
       while (!final) {
-        let chunk: ReadableStreamReadResult<Uint8Array>;
-        try {
-          chunk = await guard.race(reader.read());
-        } catch (cause) {
-          throw (
-            guard.failure() ??
-            new OllamaError('unreachable', 'The connection to Ollama was lost.', { model, cause })
-          );
-        }
-        // A chunk that was already buffered wins the race against an abort.
-        const stopped = guard.failure();
-        if (stopped) throw stopped;
+        const chunk = await readChunk(reader, guard, model);
         if (chunk.done) {
           ended = true;
           break;
@@ -429,6 +490,11 @@ export function createOllamaClient(opts: OllamaClientOptions): OllamaClient {
           pending = pending.slice(newline + 1);
           final = take(line);
           newline = pending.indexOf('\n');
+        }
+        // A line that never ends would otherwise grow for as long as the server keeps
+        // sending. UTF-16 units are never more than the bytes they came from.
+        if (!final && pending.length > MAX_STREAM_LINE_BYTES) {
+          throw protocolError('a stream line is too long.', model);
         }
       }
       // The last line may arrive without its newline.

@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { isLinkLine, sectionAt, stripWikilinks, wikilinks } from '../src/editor/sectionAt.ts';
-import { companionBasename, companionPath, dailyLinkLine, sanitizeTitle } from '../src/notes/sanitize.ts';
+import {
+  companionBasename,
+  companionPath,
+  dailyLinkLine,
+  hasDotSegments,
+  sanitizeTitle,
+  vaultFolder,
+} from '../src/notes/sanitize.ts';
 
 describe('sanitizeTitle', () => {
   test('the example from the plan', () => {
@@ -164,6 +171,23 @@ describe('companionPath', () => {
   test('slashes around the folder are ignored', () => {
     assert.equal(companionPath('00 Inbox/', base, () => false), `00 Inbox/${base}.md`);
     assert.equal(companionPath('/00 Inbox//', base, () => false), `00 Inbox/${base}.md`);
+  });
+
+  test('a folder that arrived by sync with . or .. segments loses them: nothing is written outside the vault', () => {
+    assert.equal(companionPath('../outside', base, () => false), `outside/${base}.md`);
+    // The segment is dropped, not resolved: "a/../b" names the folder the user typed, minus the climb.
+    assert.equal(companionPath('a/../b', base, () => false), `a/b/${base}.md`);
+    assert.equal(companionPath('./x//y', base, () => false), `x/y/${base}.md`);
+    assert.equal(companionPath('..', base, () => false), `${base}.md`);
+  });
+
+  test('vaultFolder and hasDotSegments', () => {
+    assert.equal(vaultFolder(' /10 Work/Meetings/ '), '10 Work/Meetings');
+    assert.equal(vaultFolder('/'), '');
+    assert.equal(vaultFolder('a/./b/../c'), 'a/b/c');
+    assert.equal(hasDotSegments('a/../b'), true);
+    assert.equal(hasDotSegments('./a'), true);
+    assert.equal(hasDotSegments('a.b/..c/c..'), false);
   });
 
   test('collision suffixes', () => {

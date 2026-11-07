@@ -10,7 +10,7 @@ import { EditorView } from '@codemirror/view';
 import type { ViewUpdate } from '@codemirror/view';
 
 import { normalizeStats as normalize } from '../src/llm/tokens.ts';
-import { DEFAULT_LOCAL, DEFAULT_SETTINGS, softMarkerRegex, softMarkerUnsupported } from '../src/settings.ts';
+import { DEFAULT_LOCAL, DEFAULT_SETTINGS, EDIT_ORIGIN, softMarkerRegex, softMarkerUnsupported } from '../src/settings.ts';
 import type { DailyUpdate, HamsterSettings, Stats } from '../src/types.ts';
 
 /* Module I, the daily-note locator and the host adapters around it. Inside
@@ -142,12 +142,13 @@ const { createNotesHost, linkedNoteText, pickerFolders, stripLinkedMentions } = 
 );
 const { TextTarget } = await import('../src/notes/textTarget.ts');
 const { CompanionStore } = await import('../src/notes/companionStore.ts');
-const { renderCompanion } = await import('../src/notes/companion.ts');
+const { regionSkeleton, renderCompanion } = await import('../src/notes/companion.ts');
 const {
   HamsterSettingTab,
   checkPrefix,
   checkSoftMarkerPattern,
   describeOllamaAddress,
+  describeRuntimeFolder,
   nodePathPlaceholder,
   parseFolderList,
   parseNumber,
@@ -1485,14 +1486,107 @@ describe('pickerFolders', () => {
 });
 
 describe('createNotesHost', () => {
-  function build(settings: Partial<HamsterSettings> = {}): { fake: FakeApp; host: ReturnType<typeof createNotesHost> } {
+  /** The target's clock, and when an editor last touched each note: what holds a Vault write back. */
+  interface HostClock {
+    time: number;
+    touches: Map<string, number>;
+    sleeps: number[];
+    /** Runs at each pause of the target, after the clock moved. */
+    onSleep: (() => void) | null;
+  }
+
+  function build(
+    settings: Partial<HamsterSettings> = {},
+  ): { fake: FakeApp; host: ReturnType<typeof createNotesHost>; clock: HostClock } {
     const fake = new FakeApp();
     const current = { ...DEFAULT_SETTINGS, ...settings };
     const locator = new DailyNoteLocator(fake.app);
-    const target = new TextTarget(fake.app, { lastTouch: () => undefined, now: () => 0 });
+    const clock: HostClock = { time: 0, touches: new Map(), sleeps: [], onSleep: null };
+    const target = new TextTarget(fake.app, {
+      lastTouch: (path) => clock.touches.get(path),
+      now: () => clock.time,
+      sleep: async (ms) => {
+        clock.sleeps.push(ms);
+        clock.time += ms;
+        clock.onSleep?.();
+      },
+    });
     const companions = new CompanionStore(fake.app, () => current, target);
     const host = createNotesHost(fake.app, { settings: () => current, locator, target, companions });
-    return { fake, host };
+    return { fake, host, clock };
+  }
+
+  interface Pos {
+    line: number;
+    ch: number;
+  }
+
+  /** Obsidian's Editor over a string, as far as the host's writes use it. */
+  class FakeEditor {
+    text: string;
+    readonly replaceCalls: Array<{ text: string; from: Pos; to: Pos | undefined; origin: string | undefined }> = [];
+
+    constructor(text: string) {
+      this.text = text;
+    }
+
+    getValue(): string {
+      return this.text;
+    }
+
+    lineCount(): number {
+      return this.text.split('\n').length;
+    }
+
+    lastLine(): number {
+      return this.lineCount() - 1;
+    }
+
+    getLine(line: number): string {
+      return this.text.split('\n')[line] ?? '';
+    }
+
+    posToOffset(pos: Pos): number {
+      const lines = this.text.split('\n');
+      let at = 0;
+      for (let i = 0; i < pos.line; i++) at += lines[i].length + 1;
+      return at + pos.ch;
+    }
+
+    offsetToPos(offset: number): Pos {
+      const before = this.text.slice(0, offset);
+      return { line: before.split('\n').length - 1, ch: offset - (before.lastIndexOf('\n') + 1) };
+    }
+
+    replaceRange(text: string, from: Pos, to?: Pos, origin?: string): void {
+      this.replaceCalls.push({ text, from, to, origin });
+      const start = this.posToOffset(from);
+      const end = to ? this.posToOffset(to) : start;
+      this.text = this.text.slice(0, start) + text + this.text.slice(end);
+    }
+  }
+
+  /** Opens `path` in a pane, in source mode: the host's writes to it then go through this editor. */
+  function openInEditor(fake: FakeApp, path: string): FakeEditor {
+    const entry = fake.files.get(path);
+    assert.ok(entry, `${path} is not in the fake vault`);
+    const editor = new FakeEditor(entry.data);
+    const view = new obsidian.MarkdownView(entry.file, editor);
+    Object.assign(fake.workspace, {
+      getLeavesOfType: (type: string) => (type === 'markdown' ? [{ isDeferred: false, view }] : []),
+    });
+    return editor;
+  }
+
+  /** The clock's time at each `vault.process` call, the one Vault write the host makes to an existing note. */
+  function processTimes(fake: FakeApp, clock: HostClock): number[] {
+    const times: number[] = [];
+    const process = fake.vault.process;
+    fake.vault.process = async (file, fn) => {
+      times.push(clock.time);
+      return process(file, fn);
+    };
+    return times;
   }
 
   const REGISTRY = [
@@ -1679,6 +1773,90 @@ describe('createNotesHost', () => {
     );
   });
 
+  const MEETING = { date: '2026-10-09', source: 'Budget review#0' };
+  const MEETING_NOTE = '10 Work/Budget review.md';
+  const SKELETON = regionSkeleton().join('\n');
+  const PROPERTIES = '---\ntype: meeting\ndate: 2026-10-09\ntags: [meeting, magical-hamster]\nhamster_source: "Budget review#0"\n---\n';
+
+  it('prepares a note open in source mode through its editor, with nothing written to the vault', async () => {
+    const { fake, host, clock } = build();
+    const text = '# Budget\n\n- envelope 52k\n\n\n';
+    fake.add(MEETING_NOTE, text);
+    const editor = openInEditor(fake, MEETING_NOTE);
+    const processed = processTimes(fake, clock);
+
+    assert.equal(await host.prepareMeetingNote(MEETING_NOTE, MEETING), 'done');
+
+    assert.deepEqual(processed, []);
+    assert.equal(fake.files.get(MEETING_NOTE)?.data, text, 'the file waits for the editor\'s own save');
+    // The properties, then the sections after the last line that holds something: the blank lines stay below.
+    assert.equal(editor.getValue(), `${PROPERTIES}# Budget\n\n- envelope 52k\n${SKELETON}\n\n\n`);
+    assert.equal(editor.replaceCalls.length, 2);
+    assert.ok(editor.replaceCalls.every((call) => call.origin === EDIT_ORIGIN));
+    assert.deepEqual(editor.replaceCalls[0], {
+      text: PROPERTIES,
+      from: { line: 0, ch: 0 },
+      to: { line: 0, ch: 0 },
+      origin: EDIT_ORIGIN,
+    });
+  });
+
+  it('prepares a closed note through the Vault, each write once an editor\'s pending save is past', async () => {
+    const { fake, host, clock } = build();
+    fake.add(MEETING_NOTE, '---\ntype: note\ntags: [work]\n---\n# Budget\n\n- envelope 52k\n');
+    // Typed in half a second ago, in a pane since put in Reading view.
+    clock.touches.set(MEETING_NOTE, clock.time - 2000);
+    const processed = processTimes(fake, clock);
+
+    assert.equal(await host.prepareMeetingNote(MEETING_NOTE, MEETING), 'done');
+
+    assert.equal(processed.length, 2, 'the properties, then the sections');
+    assert.ok(processed.every((at) => at >= 500), 'both after the cooldown');
+    assert.equal(
+      fake.files.get(MEETING_NOTE)?.data,
+      `---\ntype: note\ntags: [work, meeting, magical-hamster]\ndate: 2026-10-09\nhamster_source: "Budget review#0"\n---\n# Budget\n\n- envelope 52k\n${SKELETON}\n`,
+    );
+  });
+
+  it('finishes a note whose properties were written before its sections, without writing them again', async () => {
+    const { fake, host, clock } = build();
+    fake.add(MEETING_NOTE, `${PROPERTIES}# Budget\n`);
+    const processed = processTimes(fake, clock);
+
+    assert.equal(await host.prepareMeetingNote(MEETING_NOTE, MEETING), 'done');
+
+    assert.equal(processed.length, 2, 'the properties are read and left as they are');
+    assert.equal(fake.files.get(MEETING_NOTE)?.data, `${PROPERTIES}# Budget\n${SKELETON}\n`);
+  });
+
+  it('answers exists for a note that holds the sections, missing for one that is not there', async () => {
+    const { fake, host, clock } = build();
+    const prepared = `${PROPERTIES}# Budget\n${SKELETON}\n`;
+    fake.add(MEETING_NOTE, prepared);
+    const editor = openInEditor(fake, MEETING_NOTE);
+    const processed = processTimes(fake, clock);
+
+    assert.equal(await host.prepareMeetingNote(MEETING_NOTE, MEETING), 'exists');
+    assert.equal(editor.getValue(), prepared);
+    assert.deepEqual(processed, []);
+    assert.equal(await host.prepareMeetingNote('10 Work/Gone.md', MEETING), 'missing');
+  });
+
+  it('answers busy, with nothing written, when the note is being typed in', async () => {
+    const { fake, host, clock } = build();
+    const text = '# Budget\n';
+    fake.add(MEETING_NOTE, text);
+    clock.touches.set(MEETING_NOTE, clock.time);
+    clock.onSleep = () => clock.touches.set(MEETING_NOTE, clock.time);
+    const processed = processTimes(fake, clock);
+
+    assert.equal(await host.prepareMeetingNote(MEETING_NOTE, MEETING), 'busy');
+
+    assert.deepEqual(processed, []);
+    assert.equal(fake.files.get(MEETING_NOTE)?.data, text);
+    assert.ok(clock.time >= 6000, 'after having waited for the note to settle');
+  });
+
   it('remembers a companion it created by the keys in its frontmatter', async () => {
     const { fake, host } = build();
     fake.folders.push('00 Inbox');
@@ -1762,17 +1940,30 @@ describe('settings tab: the speech fields of this device', () => {
   interface Row {
     name: string;
     desc: string;
+    descEl: { classes: Set<string> };
     controls: Control[];
   }
 
   const HOME = '/Users/someone';
   const DEFAULT_DIR = `${HOME}/Library/Application Support/magical-hamster`;
+  const PLUGIN_VERSION = '0.1.5';
+  const SETUP_COMMAND = 'curl … releases/download/0.1.5/setup-speech.mjs …';
+
+  interface OpenOptions {
+    /** Where the vault is on disk, when the adapter can say. */
+    vaultBase?: string;
+    /** Directory -> the plugin version its setup recorded (null: none). This plugin's own when not named. */
+    versions?: Record<string, string | null>;
+  }
 
   /** The tab, drawn, over runtimes installed in the given directories (directory -> the Node its setup recorded). */
-  function open(installed: Record<string, string>, stored: Partial<typeof DEFAULT_LOCAL> = {}) {
+  function open(installed: Record<string, string>, stored: Partial<typeof DEFAULT_LOCAL> = {}, opts: OpenOptions = {}) {
     let local = { ...DEFAULT_LOCAL, ...stored };
     const asked: string[] = [];
-    const tab = new HamsterSettingTab(new FakeApp().app, {} as ConstructorParameters<typeof HamsterSettingTab>[1], {
+    const fake = new FakeApp();
+    if (opts.vaultBase !== undefined) Object.assign(fake.vault, { adapter: new obsidian.FileSystemAdapter(opts.vaultBase) });
+    const versions = opts.versions ?? {};
+    const tab = new HamsterSettingTab(fake.app, {} as ConstructorParameters<typeof HamsterSettingTab>[1], {
       settings: () => DEFAULT_SETTINGS,
       updateSettings: async () => undefined,
       local: () => local,
@@ -1781,11 +1972,15 @@ describe('settings tab: the speech fields of this device', () => {
       },
       defaultRuntimeDir: () => DEFAULT_DIR,
       // As in main.ts: one function resolves the folder, for the tab as for everything else.
-      runtimeDir: () => resolveRuntimeDir(local.runtimeDir, HOME),
+      runtimeDir: () => resolveRuntimeDir(local.runtimeDir, HOME, 'darwin'),
       readRuntime: (dir) => {
         asked.push(dir);
-        return Object.hasOwn(installed, dir) ? { model: `model in ${dir}`, node: installed[dir] } : null;
+        if (!Object.hasOwn(installed, dir)) return null;
+        const workerVersion = Object.hasOwn(versions, dir) ? versions[dir] : PLUGIN_VERSION;
+        return { model: `model in ${dir}`, node: installed[dir], workerVersion };
       },
+      speechSetupCommand: SETUP_COMMAND,
+      pluginVersion: PLUGIN_VERSION,
     });
     drawTab(tab);
     const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
@@ -1800,6 +1995,8 @@ describe('settings tab: the speech fields of this device', () => {
       node: () => row('Node path'),
       folder: () => row('Runtime folder'),
       status: () => row('Speech runtime').desc,
+      statusWarns: () => row('Speech runtime').descEl.classes.has('mod-warning'),
+      setup: () => row('Set up speech recognition'),
     };
   }
 
@@ -1811,7 +2008,43 @@ describe('settings tab: the speech fields of this device', () => {
     assert.equal(field.placeholder, '/Users/someone/.local/node-24/bin/node');
     assert.match(tab.node().desc, /Leave empty to use the Node that the speech setup recorded\./);
     assert.equal(tab.status(), `Installed: model in ${DEFAULT_DIR}`);
+    assert.equal(tab.statusWarns(), false);
     assert.deepEqual([...new Set(tab.asked)], [DEFAULT_DIR]);
+  });
+
+  it('asks for the setup to be run again when the runtime was set up by another plugin version, or by none', () => {
+    const older = open({ [DEFAULT_DIR]: '/recorded/node' }, {}, { versions: { [DEFAULT_DIR]: '0.0.9' } });
+    assert.equal(
+      older.status(),
+      `Installed: model in ${DEFAULT_DIR} Set up by plugin version 0.0.9 (this is 0.1.5); run the setup command again.`,
+    );
+    assert.equal(older.statusWarns(), true);
+
+    const unversioned = open({ [DEFAULT_DIR]: '/recorded/node' }, {}, { versions: { [DEFAULT_DIR]: null } });
+    assert.equal(
+      unversioned.status(),
+      `Installed: model in ${DEFAULT_DIR} Set up by an earlier plugin version (this is 0.1.5); run the setup command again.`,
+    );
+    assert.equal(unversioned.statusWarns(), true);
+
+    // A patch apart is the same worker; a folder typed in is judged by its own record.
+    const same = open(
+      { [DEFAULT_DIR]: '/recorded/node', '/Volumes/Fast/hamster': '/fast/node' },
+      {},
+      { versions: { [DEFAULT_DIR]: '0.1.9', '/Volumes/Fast/hamster': '0.2.0' } },
+    );
+    assert.equal(same.status(), `Installed: model in ${DEFAULT_DIR}`);
+    assert.equal(same.statusWarns(), false);
+    same.folder().controls[0].type('/Volumes/Fast/hamster');
+    assert.match(same.status(), /Set up by plugin version 0\.2\.0 \(this is 0\.1\.5\); run the setup command again\.$/);
+    assert.equal(same.statusWarns(), true);
+    same.folder().controls[0].type('');
+    assert.equal(same.statusWarns(), false);
+  });
+
+  it('shows and copies the setup command it is handed, the one for this version of the plugin', () => {
+    const tab = open({});
+    assert.match(tab.setup().desc, /The command \(the button copies it\): curl … releases\/download\/0\.1\.5\/setup-speech\.mjs … \(in Terminal\)\.$/);
   });
 
   it('shows an example path when no speech runtime is installed', () => {
@@ -1872,6 +2105,46 @@ describe('settings tab: the speech fields of this device', () => {
     assert.equal(tab.asked.at(-1), `${HOME}/hamster`);
     assert.equal(tab.status(), `Installed: model in ${HOME}/hamster`);
     assert.equal(tab.node().controls[0].placeholder, '/recorded/home/node');
+    assert.doesNotMatch(tab.folder().desc, /relative folder/);
+    assert.equal(tab.folder().descEl.classes.has('mod-warning'), false);
+  });
+
+  it('says under a relative runtime folder where it really is, and no longer once the folder is absolute', () => {
+    const tab = open({ [`${HOME}/hamster`]: '/recorded/home/node' });
+    const [folder] = tab.folder().controls;
+    const described = (): string => tab.folder().desc;
+    assert.match(described(), /Nothing is copied into it\.$/);
+    assert.equal(tab.folder().descEl.classes.has('mod-warning'), false);
+
+    folder.type('hamster');
+    assert.match(described(), /Nothing is copied into it\. A relative folder is taken from your home folder: \/Users\/someone\/hamster\.$/);
+    assert.equal(tab.folder().descEl.classes.has('mod-warning'), true);
+    assert.equal(tab.status(), `Installed: model in ${HOME}/hamster`, 'and that is where the runtime is looked for');
+
+    folder.type('/Volumes/Fast/hamster');
+    assert.match(described(), /Nothing is copied into it\.$/);
+    assert.equal(tab.folder().descEl.classes.has('mod-warning'), false);
+  });
+
+  it('warns under a runtime folder inside the vault, where the adapter can say where the vault is', () => {
+    const vault = `${HOME}/Vault`;
+    const tab = open({}, { runtimeDir: `${vault}/hamster` }, { vaultBase: vault });
+    const warning = /This folder is inside the vault: the model, the index and the stats would be synced with your notes\. Choose a folder outside it\.$/;
+    assert.match(tab.folder().desc, warning, 'said as the tab is drawn');
+    assert.equal(tab.folder().descEl.classes.has('mod-warning'), true);
+
+    const [folder] = tab.folder().controls;
+    folder.type(`${vault}-old/hamster`);
+    assert.doesNotMatch(tab.folder().desc, /inside the vault/, 'a sibling whose name merely starts the same');
+    assert.equal(tab.folder().descEl.classes.has('mod-warning'), false);
+
+    folder.type('Vault/hamster');
+    assert.match(tab.folder().desc, /A relative folder is taken from your home folder: \/Users\/someone\/Vault\/hamster\. This folder is inside the vault/);
+    assert.equal(tab.folder().descEl.classes.has('mod-warning'), true);
+
+    // Without a base path (a vault that is not on disk) nothing can be said about it.
+    const elsewhere = open({}, { runtimeDir: `${vault}/hamster` });
+    assert.doesNotMatch(elsewhere.folder().desc, /inside the vault/);
   });
 
   it('treats a runtime that cannot be read as not installed', () => {
@@ -1888,11 +2161,56 @@ describe('settings tab: the speech fields of this device', () => {
       readRuntime: () => {
         throw new Error('EACCES');
       },
+      speechSetupCommand: SETUP_COMMAND,
+      pluginVersion: PLUGIN_VERSION,
     });
     drawTab(tab);
     const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
     assert.match(rows.find((row) => row.name === 'Speech runtime')?.desc ?? '', /^Not installed\./);
     assert.equal(rows.find((row) => row.name === 'Node path')?.controls[0].placeholder, '/opt/homebrew/bin/node');
+  });
+});
+
+describe('settings tab: what is said under the runtime folder', () => {
+  const HOME = '/Users/someone';
+  const VAULT = `${HOME}/Vault`;
+  const RELATIVE = (resolved: string): string => `A relative folder is taken from your home folder: ${resolved}.`;
+  const IN_VAULT =
+    'This folder is inside the vault: the model, the index and the stats would be synced with your notes. Choose a folder outside it.';
+
+  it('says nothing for the default, a home folder or an absolute folder outside the vault', () => {
+    assert.equal(describeRuntimeFolder('', `${HOME}/Library/Application Support/magical-hamster`, VAULT), null);
+    assert.equal(describeRuntimeFolder('   ', `${HOME}/Library/Application Support/magical-hamster`, VAULT), null);
+    assert.equal(describeRuntimeFolder('~/hamster', `${HOME}/hamster`, VAULT), null);
+    assert.equal(describeRuntimeFolder('~', HOME, VAULT), null, 'the home folder itself is not inside the vault');
+    assert.equal(describeRuntimeFolder('/Volumes/Fast/hamster', '/Volumes/Fast/hamster', VAULT), null);
+    assert.equal(describeRuntimeFolder('/Volumes/Fast/hamster', '/Volumes/Fast/hamster', null), null);
+  });
+
+  it('says where a relative folder really is', () => {
+    assert.equal(describeRuntimeFolder('hamster', `${HOME}/hamster`, null), RELATIVE(`${HOME}/hamster`));
+    assert.equal(describeRuntimeFolder(' ./hamster ', `${HOME}/hamster`, null), RELATIVE(`${HOME}/hamster`));
+    assert.equal(describeRuntimeFolder('speech/runtime', `${HOME}/speech/runtime`, VAULT), RELATIVE(`${HOME}/speech/runtime`));
+    // Another user's home is not expanded: it is a folder of that name, in ours.
+    assert.equal(describeRuntimeFolder('~someone/x', `${HOME}/~someone/x`, null), RELATIVE(`${HOME}/~someone/x`));
+  });
+
+  it('warns of a folder inside the vault, the vault itself included, and not of a sibling', () => {
+    assert.equal(describeRuntimeFolder(`${VAULT}/hamster`, `${VAULT}/hamster`, VAULT), IN_VAULT);
+    assert.equal(describeRuntimeFolder(`${VAULT}/.obsidian/hamster`, `${VAULT}/.obsidian/hamster`, VAULT), IN_VAULT);
+    assert.equal(describeRuntimeFolder(VAULT, VAULT, VAULT), IN_VAULT);
+    assert.equal(describeRuntimeFolder(`~/Vault/hamster`, `${VAULT}/hamster`, VAULT), IN_VAULT, 'however it was spelled');
+    assert.equal(describeRuntimeFolder(`${VAULT}-old/hamster`, `${VAULT}-old/hamster`, VAULT), null);
+    assert.equal(describeRuntimeFolder(`${VAULT}/hamster`, `${VAULT}/hamster`, `${VAULT}/`), IN_VAULT, 'a base written with its slash');
+    assert.equal(describeRuntimeFolder(`${VAULT}/hamster`, `${VAULT}/hamster`, null), null, 'no base path, nothing to compare with');
+    assert.equal(describeRuntimeFolder(`${VAULT}/hamster`, `${VAULT}/hamster`, '  '), null);
+  });
+
+  it('says both when a relative folder lands inside the vault', () => {
+    assert.equal(
+      describeRuntimeFolder('Vault/hamster', `${VAULT}/hamster`, VAULT),
+      `${RELATIVE(`${VAULT}/hamster`)} ${IN_VAULT}`,
+    );
   });
 });
 
@@ -1932,6 +2250,8 @@ describe('settings tab: the Ollama address', () => {
       defaultRuntimeDir: () => '/runtime',
       runtimeDir: () => '/runtime',
       readRuntime: () => null,
+      speechSetupCommand: 'curl …',
+      pluginVersion: null,
     });
     drawTab(tab);
     const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
@@ -2067,6 +2387,19 @@ describe('settings tab: the Ollama address', () => {
     }
   });
 
+  it('refuses an address with a user name or password: fetch could not send them, and they would be synced', () => {
+    const t = open();
+    try {
+      t.field.type('http://user:secret@gpu-box.local:11434');
+      assert.equal(t.row.error, 'Enter the address without a user name or password.');
+      t.field.fire('blur');
+      t.tab.hide();
+      assert.deepEqual(t.saved, []);
+    } finally {
+      t.close();
+    }
+  });
+
   it('saves nothing when the field is left as it was', () => {
     const t = open();
     try {
@@ -2087,6 +2420,83 @@ describe('settings tab: the Ollama address', () => {
   });
 });
 
+describe('settings tab: the folder fields', () => {
+  interface Control {
+    type(value: string): void;
+  }
+  interface Row {
+    name: string;
+    error: string | null;
+    controls: Control[];
+  }
+  const globals = globalThis as { window?: unknown };
+
+  function open(name: string) {
+    let settings: HamsterSettings = { ...DEFAULT_SETTINGS };
+    const saved: Array<Partial<HamsterSettings>> = [];
+    const savedWindow = globals.window;
+    globals.window = {
+      setTimeout: (): number => 1,
+      clearTimeout: (): void => undefined,
+    };
+    const tab = new HamsterSettingTab(new FakeApp().app, {} as ConstructorParameters<typeof HamsterSettingTab>[1], {
+      settings: () => settings,
+      updateSettings: async (patch) => {
+        saved.push(patch);
+        settings = { ...settings, ...patch };
+      },
+      local: () => DEFAULT_LOCAL,
+      setLocal: () => undefined,
+      defaultRuntimeDir: () => '/runtime',
+      runtimeDir: () => '/runtime',
+      readRuntime: () => null,
+      speechSetupCommand: 'curl …',
+      pluginVersion: null,
+    });
+    drawTab(tab);
+    const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
+    const row = rows.find((candidate) => candidate.name === name);
+    assert.ok(row, `no setting named ${name}`);
+    return {
+      tab,
+      row,
+      field: row.controls[0],
+      saved,
+      close: (): void => {
+        globals.window = savedWindow;
+      },
+    };
+  }
+
+  for (const name of ['Companion folder', 'Entity registry']) {
+    it(`${name}: a path with a . or .. segment is refused and not saved`, () => {
+      const t = open(name);
+      try {
+        t.field.type('../outside');
+        assert.equal(t.row.error, 'A folder path cannot contain . or .. segments.');
+        t.field.type('10 Work/./x');
+        assert.equal(t.row.error, 'A folder path cannot contain . or .. segments.');
+        t.tab.hide();
+        assert.deepEqual(t.saved, []);
+      } finally {
+        t.close();
+      }
+    });
+  }
+
+  it('Companion folder: a vault path is saved without its outer slashes', () => {
+    const t = open('Companion folder');
+    try {
+      t.field.type(' /10 Work/Meetings/ ');
+      assert.equal(t.row.error, null);
+      t.tab.hide();
+      assert.deepEqual(t.saved, [{ companionFolder: '10 Work/Meetings' }]);
+    } finally {
+      t.close();
+    }
+  });
+});
+
 describe('settings tab: what the descriptions say', () => {
   /** The description under each setting of the tab, by the setting's name. */
   function descriptions(): Map<string, string> {
@@ -2098,6 +2508,8 @@ describe('settings tab: what the descriptions say', () => {
       defaultRuntimeDir: () => '/runtime',
       runtimeDir: () => '/runtime',
       readRuntime: () => null,
+      speechSetupCommand: 'curl -fsSL https://example.test/setup-speech.mjs -o setup-speech.mjs && node setup-speech.mjs',
+      pluginVersion: null,
     });
     drawTab(tab);
     const rows = (tab.containerEl as unknown as { rows: Array<{ name: string; desc: string }> }).rows;
@@ -2154,6 +2566,8 @@ describe('settings tab: the definitions Obsidian searches and draws', () => {
       defaultRuntimeDir: () => use('defaultRuntimeDir', '/runtime'),
       runtimeDir: () => use('runtimeDir', '/runtime'),
       readRuntime: () => use('readRuntime', null),
+      speechSetupCommand: 'curl …',
+      pluginVersion: '0.1.5',
     });
     const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
 
@@ -2197,7 +2611,9 @@ describe('settings tab: the definitions Obsidian searches and draws', () => {
       },
       defaultRuntimeDir: () => '/runtime',
       runtimeDir: () => local.runtimeDir || '/runtime',
-      readRuntime: (dir) => (dir === '/fast' ? { model: 'fast model', node: '/fast/node' } : null),
+      readRuntime: (dir) => (dir === '/fast' ? { model: 'fast model', node: '/fast/node', workerVersion: '0.1.5' } : null),
+      speechSetupCommand: 'curl …',
+      pluginVersion: '0.1.5',
     });
     // As Obsidian does: the list it is given when the plugin loads is the one it draws every time.
     const loaded = tab.getSettingDefinitions();
@@ -2439,6 +2855,10 @@ describe('parseFolderList', () => {
     assert.deepEqual(parseFolderList('a\na/\n/\n//\n'), ['a', '/']);
     assert.deepEqual(parseFolderList(''), []);
     assert.deepEqual(parseFolderList('\r\n a \r\n'), ['a']);
+  });
+
+  it('leaves out a line with a . or .. segment: it names no folder of the vault', () => {
+    assert.deepEqual(parseFolderList('../x\n/\n10 Work/./y\n10 Work/y\n'), ['/', '10 Work/y']);
   });
 });
 

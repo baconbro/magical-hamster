@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { chunkMarkdown, stripFrontmatter } from '../src/rag/chunk.ts';
+import { chunkMarkdown, headingTitle, stripFrontmatter } from '../src/rag/chunk.ts';
 import { estimateTokens } from '../src/util/text.ts';
 
 const FENCE = '```';
@@ -81,6 +81,34 @@ test('a tag line or seven hashes is not a heading', () => {
       text: '#followup is a tag and this line is body text.\n####### seven hashes is body text as well.',
     },
   ]);
+});
+
+test('a closing run of hashes leaves the heading, a hash that is part of a word stays', () => {
+  assert.equal(headingTitle('Title ##'), 'Title');
+  assert.equal(headingTitle('Title #'), 'Title');
+  assert.equal(headingTitle('Title\t###  '), 'Title');
+  assert.equal(headingTitle('C#'), 'C#');
+  assert.equal(headingTitle('Learn C#'), 'Learn C#');
+  assert.equal(headingTitle('C# ###'), 'C#');
+  assert.equal(headingTitle('#'), '');
+  assert.equal(headingTitle(''), '');
+  assert.equal(headingTitle('  spaced  '), 'spaced');
+  assert.deepEqual(
+    headings('## Budget ##\nThe budget section has its own text.\n\n## Learn C#\nThe language section has its own text.'),
+    ['Budget', 'Learn C#'],
+  );
+});
+
+test('a heading with thousands of blanks or hashes inside is read in one pass', () => {
+  // A pattern for a closing run at the end of the line tried it again from every blank.
+  const blanks = ' '.repeat(20_000);
+  const started = performance.now();
+  assert.equal(headingTitle(`Title${blanks}#`), 'Title');
+  assert.equal(headingTitle(`Title${blanks}word`), `Title${blanks}word`);
+  assert.equal(headingTitle(`${'#'.repeat(20_000)}x`), `${'#'.repeat(20_000)}x`);
+  assert.deepEqual(headings(`# Title${blanks}#\nThe section under it has its own text.`), ['Title']);
+  assert.deepEqual(headings(`# Title${blanks}word\nThe section under it has its own text.`), [`Title${blanks}word`]);
+  assert.ok(performance.now() - started < 50, `took ${Math.round(performance.now() - started)} ms`);
 });
 
 test('wikilinks become readable text, in headings and in bodies', () => {

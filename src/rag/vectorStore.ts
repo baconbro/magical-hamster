@@ -171,7 +171,10 @@ export class VectorStore<M> {
 
   private checkLength(vector: Float32Array): void {
     if (vector.length !== this.dim) {
-      throw new Error(`Vector length mismatch: expected ${this.dim}, got ${vector.length}`);
+      // The embedder's dimension changed under the store: nothing it returns from now on fits.
+      throw Object.assign(new Error(`Vector length mismatch: expected ${this.dim}, got ${vector.length}`), {
+        kind: 'dimension' as const,
+      });
     }
   }
 

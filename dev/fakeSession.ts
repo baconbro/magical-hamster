@@ -29,6 +29,7 @@ import { shortHash } from '../src/util/hash.ts';
 import { detectLang } from '../src/util/lang.ts';
 import { clock, isoDate } from '../src/util/text.ts';
 import { renderMiniMarkdown } from '../src/ui/miniMarkdown.ts';
+import { SPEECH_SETUP_COMMAND } from '../src/project.ts';
 import { SAMPLE_DAILY } from './sampleDaily.ts';
 
 /* --------------------------------------------------------------------------
@@ -1523,5 +1524,5 @@ export function createFakeSession(opts: {
   textarea.value = SAMPLE_DAILY;
   syncDaily();
 
-  return { store, controller, host: { renderMarkdown: renderMiniMarkdown }, scenarios };
+  return { store, controller, host: { renderMarkdown: renderMiniMarkdown, speechSetupCommand: SPEECH_SETUP_COMMAND }, scenarios };
 }

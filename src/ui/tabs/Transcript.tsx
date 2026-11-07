@@ -7,9 +7,7 @@ import { STT_NOT_INSTALLED_FALLBACK, messageOr } from '../components/banner.ts';
 import { int, transcriptToText } from '../components/format.ts';
 import { CopyButton, EmptyState } from '../components/ui.tsx';
 import { useStickToBottom } from '../components/useStickToBottom.ts';
-import { useHamster } from '../context.tsx';
-import { SPEECH_SETUP_COMMAND } from '../../project.ts';
-
+import { useHamster, useUiHost } from '../context.tsx';
 
 /* A long meeting is thousands of turns. They are rendered in blocks so that a
    new turn reconciles one block instead of every row. */
@@ -27,13 +25,15 @@ export function TranscriptTab() {
 
 function NotInstalled() {
   const message = useHamster((s) => s.sttMessage);
+  // The host's, not the constant's: it names the release this plugin was built with.
+  const { speechSetupCommand } = useUiHost();
   return (
     <div className="relative min-h-0 flex-1 overflow-y-auto px-3 py-3">
       <EmptyState icon={AudioLines}>
         <p>{messageOr(message, STT_NOT_INSTALLED_FALLBACK)}</p>
         <div className="flex max-w-full items-center gap-1 rounded-md border border-line bg-surface-alt py-0.5 pr-0.5 pl-2">
-          <code className="min-w-0 truncate text-ink select-text">{SPEECH_SETUP_COMMAND}</code>
-          <CopyButton iconOnly label="Copy the setup command, to paste into Terminal" getText={() => SPEECH_SETUP_COMMAND} />
+          <code className="min-w-0 truncate text-ink select-text">{speechSetupCommand}</code>
+          <CopyButton iconOnly label="Copy the setup command, to paste into Terminal" getText={() => speechSetupCommand} />
         </div>
       </EmptyState>
     </div>

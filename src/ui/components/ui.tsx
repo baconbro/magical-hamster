@@ -132,12 +132,10 @@ export function CopyButton({ getText, label = 'Copy', iconOnly = false, disabled
 }
 
 export function Spinner({ small }: { small?: boolean }) {
-  return (
-    <LoaderCircle
-      className={clsx('shrink-0 animate-spin motion-reduce:animate-none', small ? 'size-3' : 'size-3.5')}
-      aria-hidden="true"
-    />
-  );
+  /* `mh-spin` (styles.css) rather than Tailwind's spin utility, whose `@keyframes spin` would be
+     the whole app's. Naming that utility here, even in a comment, would make Tailwind generate it:
+     it reads every word of every source file. `mh-spin` stops itself under prefers-reduced-motion. */
+  return <LoaderCircle className={clsx('mh-spin shrink-0', small ? 'size-3' : 'size-3.5')} aria-hidden="true" />;
 }
 
 export function Tag({ children, tone = 'chip', className }: { children: ReactNode; tone?: 'chip' | 'plain'; className?: string }) {

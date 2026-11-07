@@ -15,8 +15,10 @@ import {
   expandHome,
   parseRuntime,
   readRuntime,
+  resolveNodePath,
   resolveRuntimeDir,
   workerCommand,
+  workerOutdated,
 } from '../src/host/runtime.ts';
 import type { RuntimeInfo, WorkerCommand } from '../src/host/runtime.ts';
 import { createStatsIO } from '../src/host/statsIO.ts';
@@ -83,6 +85,7 @@ const RECORD = {
   chunkMs: 560,
   sha256: 'c6bf5e0df765f9d5b43bc9e0536d4b4b3e7d40bdf5ecf13e45f134c51c05ae3a',
   sherpaVersion: '1.13.8',
+  workerVersion: '0.1.4',
   installedAt: '2026-10-10T12:00:00.000Z',
 };
 const INFO: RuntimeInfo = {
@@ -91,10 +94,29 @@ const INFO: RuntimeInfo = {
   modelDir: `${RT}/models/${MODEL}`,
   model: MODEL,
   chunkMs: 560,
+  workerVersion: '0.1.4',
 };
 
 test('defaultRuntimeDir is the directory setup:stt installs into', () => {
-  assert.equal(defaultRuntimeDir(), join(homedir(), 'Library', 'Application Support', 'magical-hamster'));
+  assert.equal(defaultRuntimeDir(homedir(), 'darwin'), join(homedir(), 'Library', 'Application Support', 'magical-hamster'));
+  assert.equal(defaultRuntimeDir(homedir(), process.platform), defaultRuntimeDir(), 'this platform when none is named');
+});
+
+test('defaultRuntimeDir has a place on every desktop platform, since the stats and the index live there too', () => {
+  assert.equal(defaultRuntimeDir('/home/x', 'linux', {}), '/home/x/.local/share/magical-hamster');
+  assert.equal(defaultRuntimeDir('/home/x', 'linux', { XDG_DATA_HOME: '/data/x' }), '/data/x/magical-hamster');
+  assert.equal(defaultRuntimeDir('/home/x', 'linux', { XDG_DATA_HOME: '  ' }), '/home/x/.local/share/magical-hamster', 'blank is unset');
+  assert.equal(defaultRuntimeDir('/home/x', 'freebsd', {}), '/home/x/.local/share/magical-hamster');
+  assert.equal(
+    defaultRuntimeDir('C:\\Users\\x', 'win32', { APPDATA: 'C:\\Users\\x\\AppData\\Roaming' }),
+    'C:\\Users\\x\\AppData\\Roaming\\magical-hamster',
+  );
+  assert.equal(defaultRuntimeDir('C:\\Users\\x', 'win32', {}), 'C:\\Users\\x\\AppData\\Roaming\\magical-hamster');
+  assert.equal(
+    defaultRuntimeDir('/Users/x', 'darwin', { XDG_DATA_HOME: '/data/x', APPDATA: 'C:\\x' }),
+    '/Users/x/Library/Application Support/magical-hamster',
+    'a Mac ignores the other platforms’ variables',
+  );
 });
 
 test('expandHome replaces a leading ~ by the home directory', () => {
@@ -130,23 +152,44 @@ test('expandHome expands nothing when the home directory is unknown', () => {
 test('resolveRuntimeDir is the default directory for an empty setting', () => {
   assert.equal(resolveRuntimeDir(''), defaultRuntimeDir());
   assert.equal(resolveRuntimeDir('   '), defaultRuntimeDir());
-  assert.equal(resolveRuntimeDir('', '/Users/someone'), '/Users/someone/Library/Application Support/magical-hamster');
-  assert.equal(defaultRuntimeDir('/Users/someone'), '/Users/someone/Library/Application Support/magical-hamster');
+  assert.equal(resolveRuntimeDir('', '/Users/someone', 'darwin'), '/Users/someone/Library/Application Support/magical-hamster');
+  assert.equal(defaultRuntimeDir('/Users/someone', 'darwin'), '/Users/someone/Library/Application Support/magical-hamster');
+  assert.equal(resolveRuntimeDir('', '/home/x', 'linux', { XDG_DATA_HOME: '/data/x' }), '/data/x/magical-hamster');
 });
 
-test('resolveRuntimeDir expands a leading ~ and leaves other folders alone', () => {
+test('resolveRuntimeDir expands a leading ~ and leaves an absolute folder alone', () => {
   const home = '/Users/someone';
-  assert.equal(resolveRuntimeDir('~/hamster', home), '/Users/someone/hamster');
-  assert.equal(resolveRuntimeDir('  ~/hamster ', home), '/Users/someone/hamster', 'as typed, spaces around included');
-  assert.equal(resolveRuntimeDir('~', home), '/Users/someone');
-  assert.equal(resolveRuntimeDir('~someone/hamster', home), '~someone/hamster');
-  assert.equal(resolveRuntimeDir('/Volumes/Fast/hamster', home), '/Volumes/Fast/hamster');
+  assert.equal(resolveRuntimeDir('~/hamster', home, 'darwin'), '/Users/someone/hamster');
+  assert.equal(resolveRuntimeDir('  ~/hamster ', home, 'darwin'), '/Users/someone/hamster', 'as typed, spaces around included');
+  assert.equal(resolveRuntimeDir('~', home, 'darwin'), '/Users/someone');
+  assert.equal(resolveRuntimeDir('/Volumes/Fast/hamster', home, 'darwin'), '/Volumes/Fast/hamster');
   assert.equal(resolveRuntimeDir('~/hamster'), join(homedir(), 'hamster'), 'the real home when none is given');
   assert.equal(
-    resolveRuntimeDir('~/Library/Application Support/magical-hamster'),
-    defaultRuntimeDir(),
+    resolveRuntimeDir('~/Library/Application Support/magical-hamster', homedir(), 'darwin'),
+    defaultRuntimeDir(homedir(), 'darwin'),
     'the default, spelled the way the documentation spells it',
   );
+});
+
+test('resolveRuntimeDir takes a relative folder from the home directory, not from where Obsidian was started', () => {
+  const home = '/Users/x';
+  assert.equal(resolveRuntimeDir('hamster', home, 'darwin'), '/Users/x/hamster');
+  assert.equal(resolveRuntimeDir('./hamster', home, 'darwin'), '/Users/x/hamster');
+  assert.equal(resolveRuntimeDir('speech/runtime', home, 'darwin'), '/Users/x/speech/runtime');
+  // Another user's home is not ours to guess: it is a folder of that name, in ours.
+  assert.equal(resolveRuntimeDir('~someone/hamster', home, 'darwin'), '/Users/x/~someone/hamster');
+  assert.equal(resolveRuntimeDir('hamster', '', 'darwin'), 'hamster', 'nothing to take it from without a home');
+});
+
+test('resolveNodePath expands a leading ~ like the runtime folder, and keeps an empty setting empty', () => {
+  const home = '/Users/x';
+  assert.equal(resolveNodePath('~/bin/node', home), '/Users/x/bin/node');
+  assert.equal(resolveNodePath('~/.nvm/versions/node/v24.0.0/bin/node', home), '/Users/x/.nvm/versions/node/v24.0.0/bin/node');
+  assert.equal(resolveNodePath('  /opt/homebrew/bin/node ', home), '/opt/homebrew/bin/node');
+  assert.equal(resolveNodePath('node', home), 'node', 'a bare command is left to the PATH');
+  assert.equal(resolveNodePath('', home), '', 'empty means the Node the setup recorded');
+  assert.equal(resolveNodePath('   ', home), '');
+  assert.equal(resolveNodePath('~/bin/node'), join(homedir(), 'bin', 'node'), 'the real home when none is given');
 });
 
 test('parseRuntime accepts the record setup:stt writes and keeps what the plugin needs', () => {
@@ -165,6 +208,10 @@ test('parseRuntime rejects a record with a missing or unusable field', () => {
   }
   assert.equal(parseRuntime({ ...RECORD, node: '' }, RT), null, 'empty node');
   assert.equal(parseRuntime({ ...RECORD, node: '   ' }, RT), null, 'blank node');
+  // The installer writes the absolute path its self-test ran with; a relative one was edited in by hand.
+  assert.equal(parseRuntime({ ...RECORD, node: 'node' }, RT), null, 'relative node');
+  assert.equal(parseRuntime({ ...RECORD, node: 'bin/node' }, RT), null, 'relative node');
+  assert.equal(parseRuntime({ ...RECORD, node: '~/bin/node' }, RT), null, 'a ~ is not expanded here either');
   assert.equal(parseRuntime({ ...RECORD, modelDir: 42 }, RT), null, 'modelDir of the wrong type');
   assert.equal(parseRuntime({ ...RECORD, model: null }, RT), null, 'null model');
   assert.equal(parseRuntime({ ...RECORD, chunkMs: '560' }, RT), null, 'chunkMs as text');
@@ -188,6 +235,32 @@ test('parseRuntime does not need the record to name its own directory', () => {
   const record: Record<string, unknown> = { ...RECORD };
   delete record.runtimeDir;
   assert.deepEqual(parseRuntime(record, RT), INFO);
+});
+
+test('parseRuntime keeps the plugin version the setup came from, and has none for a record without one', () => {
+  assert.equal(parseRuntime(RECORD, RT)?.workerVersion, '0.1.4');
+  const record: Record<string, unknown> = { ...RECORD };
+  delete record.workerVersion;
+  assert.deepEqual(parseRuntime(record, RT), { ...INFO, workerVersion: null }, 'a runtime set up before versions were recorded');
+  assert.equal(parseRuntime({ ...RECORD, workerVersion: null }, RT)?.workerVersion, null, 'a setup run from a checkout');
+  assert.equal(parseRuntime({ ...RECORD, workerVersion: 14 }, RT)?.workerVersion, null, 'not a string');
+  assert.equal(parseRuntime({ ...RECORD, workerVersion: '' }, RT)?.workerVersion, '', 'a string is kept as written');
+});
+
+test('workerOutdated compares the major.minor of the setup with the plugin’s, and counts no version as outdated', () => {
+  assert.equal(workerOutdated('0.1.5', '0.1.9'), false, 'a patch apart');
+  assert.equal(workerOutdated('0.1.5', '0.1.5'), false);
+  assert.equal(workerOutdated('0.1.9', '0.1.5'), false, 'a newer patch is the same worker');
+  assert.equal(workerOutdated('0.1.5', '0.2.0'), true);
+  assert.equal(workerOutdated('0.2.0', '0.1.5'), true, 'a worker from a later minor is not this plugin’s either');
+  assert.equal(workerOutdated('0.1.5', '1.1.5'), true);
+  assert.equal(workerOutdated('0.10.0', '0.1.0'), true, 'read as numbers, not as text');
+  assert.equal(workerOutdated('0.01.0', '0.1.0'), false);
+  assert.equal(workerOutdated(null, '0.1.5'), true);
+  assert.equal(workerOutdated('', '0.1.5'), true);
+  assert.equal(workerOutdated('yesterday', '0.1.5'), true);
+  assert.equal(workerOutdated('0.1.5', 'dev'), false, 'a plugin whose version cannot be read asks for nothing');
+  assert.equal(workerOutdated(null, 'dev'), true, 'but a runtime without a version is still from before');
 });
 
 test('parseRuntime trusts the directory the file was found in over the one it records', () => {
@@ -231,6 +304,7 @@ test('readRuntime wants the worker script beside the record', () => {
     modelDir: join(dir, 'models', 'm'),
     model: MODEL,
     chunkMs: 560,
+    workerVersion: '0.1.4',
   });
 });
 
@@ -257,6 +331,9 @@ test('workerCommand keeps the environment, minus what only Electron should see',
     PATH: '/usr/bin:/bin',
     HOME: '/Users/someone',
     ELECTRON_RUN_AS_NODE: '1',
+    ELECTRON_NO_ATTACH_CONSOLE: '1',
+    NODE_OPTIONS: '--require /tmp/hook.js',
+    NODE_PATH: '/tmp/modules',
     UNSET: undefined,
   };
   const snapshot = { ...baseEnv };
@@ -266,8 +343,9 @@ test('workerCommand keeps the environment, minus what only Electron should see',
     HOME: '/Users/someone',
     DYLD_LIBRARY_PATH: `${RT}/node_modules/sherpa-onnx-darwin-arm64`,
   });
-  assert.ok(!('ELECTRON_RUN_AS_NODE' in env));
-  assert.ok(!('UNSET' in env));
+  for (const key of ['ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ATTACH_CONSOLE', 'NODE_OPTIONS', 'NODE_PATH', 'UNSET']) {
+    assert.ok(!(key in env), key);
+  }
   assert.deepEqual(baseEnv, snapshot, 'the caller’s environment is not touched');
 });
 
@@ -532,6 +610,8 @@ function installDom(t: TestContext, script: DomScript = {}) {
     readonly sampleRate: number;
     readonly destination = new FakeAudioNode('destination');
     state: 'suspended' | 'running' | 'closed' = 'suspended';
+    onstatechange: (() => void) | null = null;
+    resumes = 0;
     source: FakeAudioNode | null = null;
     gain: (FakeAudioNode & { gain: { value: number } }) | null = null;
     readonly audioWorklet = {
@@ -548,13 +628,21 @@ function installDom(t: TestContext, script: DomScript = {}) {
       dom.contexts.push(this);
     }
     resume(): Promise<void> {
+      this.resumes += 1;
       if (script.neverResumes) return new Promise<void>(() => {});
       this.state = 'running';
+      this.onstatechange?.();
       return Promise.resolve();
     }
     close(): Promise<void> {
       this.state = 'closed';
+      this.onstatechange?.();
       return script.neverCloses ? new Promise<void>(() => {}) : Promise.resolve();
+    }
+    /** The system suspends the context (sleep, a change of output device), which it says through `statechange`. */
+    suspend(): void {
+      this.state = 'suspended';
+      this.onstatechange?.();
     }
     createMediaStreamSource(stream: FakeStream): FakeAudioNode {
       assert.ok(dom.streams.includes(stream));
@@ -603,6 +691,7 @@ function captureLog() {
 }
 
 const DENIED = 'Microphone access was denied. Allow Obsidian in System Settings, Privacy & Security, Microphone.';
+const SUSPENDED = 'Audio capture was suspended by the system. Stop the recording and start it again.';
 
 test('capture asks for the chosen device, mono, with no processing', async (t) => {
   const dom = installDom(t);
@@ -834,6 +923,70 @@ test('capture reports a worklet that broke', async (t) => {
   dom.worklets[0].onprocessorerror?.();
   assert.deepEqual(log.errors, ['Audio capture stopped unexpectedly.']);
   await mic.stop();
+});
+
+test('capture resumes a context the system suspended, once, and gives up the second time', async (t) => {
+  const dom = installDom(t);
+  const log = captureLog();
+  const mic = await startMicCapture(log.opts());
+  const ctx = dom.contexts[0];
+  assert.equal(ctx.resumes, 1);
+  dom.worklets[0].post(Int16Array.from([1]), 0.3);
+
+  // Sleep, or a change of output device: the graph stops without a word.
+  ctx.suspend();
+  await settle();
+  assert.equal(ctx.resumes, 2);
+  assert.equal(ctx.state, 'running');
+  assert.deepEqual(log.errors, []);
+  dom.worklets[0].post(Int16Array.from([2]), 0.5);
+  assert.deepEqual(log.blocks, [[1], [2]]);
+  assert.equal(mic.level(), 0.5);
+
+  ctx.suspend();
+  assert.equal(ctx.resumes, 2, 'not tried a second time');
+  assert.deepEqual(log.errors, [SUSPENDED]);
+  assert.equal(mic.level(), 0, 'the meter does not freeze on the last peak');
+  dom.worklets[0].post(Int16Array.from([3]), 0.7);
+  assert.deepEqual(log.blocks, [[1], [2]], 'nothing more is delivered');
+
+  await mic.stop();
+  assert.equal(ctx.onstatechange, null);
+  assert.equal(ctx.state, 'closed');
+  assert.equal(log.errors.length, 1, 'closing it is not a suspension');
+});
+
+test('capture gives up on a context the system closed, or that will not resume', async (t) => {
+  const closing = installDom(t);
+  const closedLog = captureLog();
+  const closed = await startMicCapture(closedLog.opts());
+  closing.contexts[0].state = 'closed';
+  closing.contexts[0].onstatechange?.();
+  assert.deepEqual(closedLog.errors, [SUSPENDED]);
+  await closed.stop();
+
+  const dom = installDom(t);
+  type Ctx = (typeof dom.contexts)[number];
+  const Real = globals.AudioContext as new (options?: AudioContextOptions) => Ctx;
+  globals.AudioContext = class extends Real {
+    resume(): Promise<void> {
+      // The first resume is the start's; the one after the suspension is refused.
+      if (this.resumes > 0) {
+        this.resumes += 1;
+        return Promise.reject(domError('InvalidStateError', 'Cannot resume a closed AudioContext.'));
+      }
+      return super.resume();
+    }
+  };
+  const log = captureLog();
+  const mic = await startMicCapture(log.opts());
+  dom.contexts[0].suspend();
+  await settle();
+  assert.equal(dom.contexts[0].resumes, 2);
+  assert.deepEqual(log.errors, [SUSPENDED]);
+  assert.equal(mic.level(), 0);
+  await mic.stop();
+  assert.equal(log.errors.length, 1);
 });
 
 test('capture stop releases everything, once, and silences the callbacks', async (t) => {
@@ -1082,6 +1235,8 @@ interface HarnessOptions {
   runtime?: RuntimeInfo | null;
   local?: Partial<LocalSettings>;
   language?: SttLanguage;
+  /** The plugin's version, for the check against the runtime's. Absent, as main.ts without a manifest: no check. */
+  pluginVersion?: string;
   exists?(path: string): boolean;
   /** Makes every spawn throw instead of returning a child. */
   spawnError?: Error;
@@ -1098,6 +1253,7 @@ function harness(options: HarnessOptions = {}) {
     clock,
     local: () => ({ ...DEFAULT_LOCAL, runtimeDir: RT, micDeviceId: 'usb-mic', ...options.local }),
     language: () => options.language ?? 'fr-CA',
+    pluginVersion: options.pluginVersion,
     readRuntime(dir) {
       runtimeDirs.push(dir);
       return options.runtime === undefined ? INFO : options.runtime;
@@ -1252,6 +1408,47 @@ test('source: starts the worker, then the microphone, then announces it', async 
   assert.deepEqual(t.events, [READY]);
   assert.deepEqual(t.stateNames(), ['spawning', 'ready', 'running']);
   assert.deepEqual(t.log, ['hello', 'pcm']);
+});
+
+test('source: a runtime set up by another plugin version is said once, before the worker starts, and still records', async () => {
+  const t = harness({ runtime: { ...INFO, workerVersion: '0.1.4' }, pluginVersion: '0.2.0' });
+  const started = t.source.start();
+  const outdated = {
+    type: 'error',
+    code: 'worker_outdated',
+    message:
+      'The speech runtime was set up by plugin version 0.1.4; this is 0.2.0. Run the speech setup command again (Settings, Magical Hamster, Speech).',
+  };
+  assert.deepEqual(t.events, [outdated], 'heard before anything the worker says');
+  assert.equal(t.children.length, 1, 'the worker there is still runs');
+
+  t.child().emit(READY);
+  await settle();
+  t.mic.open();
+  await started;
+  assert.equal(t.source.state(), 'ready');
+  assert.deepEqual(t.events, [outdated, READY]);
+  assert.deepEqual(t.child().controls(), [{ type: 'hello', source: 'mic', sampleRate: 16000 }]);
+});
+
+test('source: a runtime that recorded no version is from before, and the words say so', async () => {
+  const t = harness({ runtime: { ...INFO, workerVersion: null }, pluginVersion: '0.1.5' });
+  void t.source.start().catch(() => undefined);
+  assert.equal(t.events.length, 1);
+  assert.match(
+    (t.events[0] as { message?: string }).message ?? '',
+    /^The speech runtime was set up by an earlier plugin version; this is 0\.1\.5\. Run the speech setup command again/,
+  );
+});
+
+test('source: a runtime of the same major.minor, or a plugin without a version, says nothing about it', async () => {
+  const same = harness({ runtime: { ...INFO, workerVersion: '0.1.9' }, pluginVersion: '0.1.5' });
+  void same.source.start().catch(() => undefined);
+  assert.deepEqual(same.events, []);
+
+  const unknown = harness({ runtime: { ...INFO, workerVersion: null } });
+  void unknown.source.start().catch(() => undefined);
+  assert.deepEqual(unknown.events, [], 'nothing to compare with');
 });
 
 test('source: start is one-shot', async () => {

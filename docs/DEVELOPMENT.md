@@ -4,7 +4,7 @@ Magical Hamster is an Obsidian plugin: a meeting assistant that listens through 
 
 ## Getting started
 
-Node 20 or later and pnpm. On a Mac with Apple silicon:
+Node 22.18 or later (the tests run TypeScript under `node --test`, which needs the type stripping Node turned on by default in 22.18; CI uses 24, see `.nvmrc`) and pnpm. On a Mac with Apple silicon:
 
 ```bash
 pnpm install
@@ -104,7 +104,7 @@ test/                   unit tests; the adapters run against a stub of `obsidian
 | Origin of the plugin's own editor writes | `hamster` (`EDIT_ORIGIN`) |
 | Link line in the daily | `↳ [[Mtg-2026-10-09 — 1-1 Jane Example\|Meeting notes]]` |
 | Companion frontmatter key | `hamster_source: "<title>#<ordinal>"` |
-| Runtime directory | `~/Library/Application Support/magical-hamster/` |
+| Runtime directory | `~/Library/Application Support/magical-hamster/` on a Mac; `%APPDATA%\magical-hamster\` on Windows; `$XDG_DATA_HOME/magical-hamster/` (`~/.local/share/magical-hamster/`) elsewhere |
 | Setting that names another runtime directory | **Runtime folder**, as the settings tab and `pnpm setup:stt` both print it |
 | Installer's environment variables | `HAMSTER_VAULT`, `HAMSTER_CONFIG_DIR` |
 | Frame magic | `M`, `H` |
@@ -114,9 +114,9 @@ test/                   unit tests; the adapters run against a stub of `obsidian
 1. Nothing is written to the vault until the user clicks **Create companion note**.
 2. The plugin adds exactly one line to the daily note and never edits any other user text.
 3. Companion writes only touch the text between a region's markers, and the `updated` date in the frontmatter. A damaged marker pair means the write is skipped, never repaired.
-4. No Vault API write to a file within 2.5 s of an edit in an editor: Obsidian saves 2 s after the last change and the later write wins.
+4. No Vault API write to a file within 2.5 s of an edit in an editor: Obsidian saves 2 s after the last change and the later write wins. The one-file mode edits properties as text lines, never through `processFrontMatter`.
 5. No wikilinks and no `- [ ]` checkboxes in generated text by default: both are indexed by other tooling in the vault.
-6. Generated text is saved inert: no image, no HTML tag, no code block or inline query that another plugin would run.
+6. Generated text is saved inert: no image, no HTML tag, no code block or inline query that another plugin would run. Links to http(s) and mailto addresses written by the model are kept: nothing fetches them until clicked. Links with any other scheme (`obsidian://`, `file:`) are reduced to their text.
 7. Models, the speech runtime, the index, stats and bench audio live outside the vault.
 8. Meeting content goes to the Ollama address and nowhere else. When that address is not this computer, the user is told (see below).
 
@@ -124,7 +124,7 @@ test/                   unit tests; the adapters run against a stub of `obsidian
 
 All of it is in `src/session/meetingSession.ts`, and the README tells the user the same. A change there keeps these, or changes the README with them.
 
-- **A recorded meeting without a companion is not dropped silently.** Its transcript is only in memory and no audio is kept. `mayLeave` refuses the first request that would leave it (`selectSection`, `newMeeting`, `endMeeting`) with "This meeting is not saved yet…"; the same request again discards it only between 1 s and 15 s after that notice, so a double click never does, and a refusal does not stay armed. Only speech counts: bullets, a summary and answers can be made again. Quitting Obsidian is not a request: nothing asks.
+- **A recorded meeting without a companion is not dropped silently.** Its transcript is only in memory and no audio is kept. `mayLeave` refuses the first request that would leave it (`selectSection`, `newMeeting`, `endMeeting`) with "This meeting is not saved yet…"; the same request again discards it only between 1 s and 15 s after that notice, so a double click never does, and a refusal does not stay armed; the notice stays up for those 15 s. Only speech counts: bullets, a summary and answers can be made again. Quitting Obsidian is not a request: nothing asks.
 - **A damaged marker pair sets its region aside** (`MeetingState.detachedRegions`): the host answers `detached`, the other regions are still written, and the sidebar names the section. `createCompanion` on a note that exists reads it again (the **Check the note again** button): a region whose pair is whole again is saved to from then on; one still damaged gets "The companion note is still damaged…".
 - **A region edited by hand is not written over.** Obsidian reports every change to a note as `modify`, the plugin's own writes included, so `handleVaultChange` cannot tell them apart by the event: the session remembers what each region held when it last wrote or read it (`noteHeld`, and `flying` for the write under way) and reads the note 2.5 s after a change, and again before every batch that replaces a region (an edit typed in the companion's own editor raises no `modify` until Obsidian saves, two seconds later). A bullet reworded in place goes into the Enhance engine, edited insights become what later ones are added to. Any other edit sets the region aside (`MeetingState.editedOutside`) with a notice, until `createCompanion` is asked for again: that replaces the region with what the sidebar shows. The transcript region is only appended to.
 - **What an earlier visit saved is not replaced unasked.** A transcript is in memory for one visit, so a later visit could only rewrite the notes from less. When the note already holds enhanced notes or a summary (`priorEnhanced`, `priorSummary`; assumed until the note has been read), Live Enhance, a change of style and the summary at Stop show their result in the sidebar only. The user is told once that the note keeps the earlier ones, and **Enhance** or **Summarize** pressed after that replaces them. No summary is started by itself at Stop over an earlier one. Bullets that are one per line of the section are taken as those lines' own instead (`EnhanceEngine.seed`), but only when each can be tied to its line: it still carries the line's kept terms (a figure by its number, a name whatever its accents) and shares a word with it. Known limit: an edit made between two visits that changes only a lone digit or swaps one common word is not seen.
@@ -192,3 +192,5 @@ pnpm install:plugin /path/to/vault .obsidian-desktop
 `pnpm dev` serves the browser harness: by default the real session on fake hosts, with `?mode=fake` a scripted store with named states. Its query parameters are listed at the top of `dev/harness.tsx`. The fake vault reports the plugin's own writes back to the session, as Obsidian does (`FakeNotesHost.onWrite`); an edit by hand can be played from the console, as described at the end of that file.
 
 A single test file: `node --disable-warning=ExperimentalWarning --test test/sectionAt.test.ts`.
+
+There is no lint command. The Obsidian community directory runs `eslint-plugin-obsidianmd` over every submission, and that scan is the lint: the release commits of 0.1.1 to 0.1.4 are what it found. There is none locally because typescript-eslint supports TypeScript below 6.1, while this repository typechecks with TypeScript 7 (the native compiler, tsgo). Anyone who wants one can add a `lint/` pnpm workspace package with its own TypeScript 6, `eslint`, `typescript-eslint`, `eslint-plugin-obsidianmd` and `obsidian`, and run eslint from there against `src/`; the sources need no change for it.

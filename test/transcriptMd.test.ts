@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { merge, readRegion, renderCompanion } from '../src/notes/companion.ts';
+import { inertMarkdown } from '../src/notes/safeMarkdown.ts';
 import { transcriptPlain, turnLine, turnsToAppend } from '../src/notes/transcriptMd.ts';
 import type { SpeakerLabels } from '../src/notes/transcriptMd.ts';
 import type { Turn } from '../src/types.ts';
@@ -35,11 +36,29 @@ describe('turnLine', () => {
     assert.equal(line, '> **[00:05] Sam:** He said <-- hamster:end transcript --> out loud <--again');
     assert.ok(!line.includes('<!--'));
     assert.ok(!turnLine(turn(5, '<<!--!-- <!<!---- <!-\n-'), LABELS).includes('<!--'));
+    // A dash opens no tag, so the inert pass leaves the defused comment as it is.
+    assert.equal(inertMarkdown('<-- x -->'), '<-- x -->');
   });
 
   it('cleans the label the same way', () => {
     const labels: SpeakerLabels = { mic: 'Mic\n(room) <!-- x', system: 'Others' };
     assert.equal(turnLine(turn(5, 'hi'), labels), '> **[00:05] Mic (room) <-- x:** hi');
+  });
+
+  it('saves a tag or an embed inert, as every other region is', () => {
+    const said = 'see <img src=x> and ![[Plan]] ![](u)';
+    const line = turnLine(turn(5, said), LABELS);
+    assert.equal(line, `> **[00:05] Sam:** ${inertMarkdown(said)}`);
+    assert.notEqual(inertMarkdown(said), said, 'the line above proves nothing unless something was defused');
+    assert.ok(!line.includes('<img'));
+    assert.ok(!line.includes('!['));
+  });
+
+  it('saves the label inert too', () => {
+    const labels: SpeakerLabels = { mic: '<script>', system: 'Others' };
+    const line = turnLine(turn(5, 'hi'), labels);
+    assert.equal(line, `> **[00:05] ${inertMarkdown('<script>')}:** hi`);
+    assert.ok(!line.includes('<script'));
   });
 
   it('returns an empty string for an empty turn', () => {
@@ -87,5 +106,11 @@ describe('transcriptPlain', () => {
 
   it('gives an empty string for no input', () => {
     assert.equal(transcriptPlain([], LABELS), '');
+  });
+
+  it('keeps the words as heard: a prompt or the clipboard renders nothing', () => {
+    const labels: SpeakerLabels = { mic: '<script>', system: 'Others' };
+    const said = 'see <img src=x> and ![[Plan]] ![](u)';
+    assert.equal(transcriptPlain([turn(5, said)], labels), `[00:05] <script>: ${said}`);
   });
 });

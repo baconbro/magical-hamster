@@ -29,7 +29,7 @@ import { entityNames, parseEntities } from '../../src/editor/entities.ts';
 import { findSection, isLinkLine, linkInsertion, wholeNoteSection, wikilinks } from '../../src/editor/sectionAt.ts';
 import type { SectionOptions } from '../../src/editor/sectionAt.ts';
 import { OllamaError } from '../../src/llm/ollama.ts';
-import { mergeAll, readCompanionKeys, regionSkeleton } from '../../src/notes/companion.ts';
+import { meetingFrontmatter, mergeAll, readCompanionKeys, regionSkeleton } from '../../src/notes/companion.ts';
 import { DEFAULT_LOCAL, DEFAULT_SETTINGS, softMarkerRegex } from '../../src/settings.ts';
 
 /**
@@ -168,6 +168,8 @@ export class FakeNotesHost implements NotesHost {
   /** Notes turned into their own meeting note. */
   readonly preparedNotes: string[] = [];
   readonly notices: string[] = [];
+  /** How long each notice asked to stay, in the order of `notices`; undefined for Obsidian's default. */
+  readonly noticeMs: Array<number | undefined> = [];
   readonly opened: string[] = [];
   readonly writes: Array<{ path: string; patches: Patch[]; outcome: WriteOutcome }> = [];
   readonly touched: Array<{ path: string; isoDate: string }> = [];
@@ -343,16 +345,12 @@ export class FakeNotesHost implements NotesHost {
     const text = this.files.get(path);
     if (text === undefined) return 'missing';
     if (text.includes('<!-- hamster:begin')) return 'exists';
-    const props = [`type: meeting`, `date: ${meta.date}`, `hamster_source: "${meta.source}"`, 'tags: [meeting, magical-hamster]'];
-    let body = text;
-    let front = props;
-    const fm = /^---\n([\s\S]*?)\n---\n?/.exec(text);
-    if (fm) {
-      front = [...fm[1].split('\n').filter((line) => !/^(date|hamster_source|tags):/.test(line)), ...props.filter((p) => !(p.startsWith('type:') && /^type:/m.test(fm[1])))];
-      body = text.slice(fm[0].length);
-    }
-    const trimmed = body.replace(/\s+$/, '');
-    this.files.set(path, `---\n${front.join('\n')}\n---\n${trimmed}\n${regionSkeleton().join('\n')}\n`);
+    // As the real host does it: the properties as lines, then the sections after the last line that holds something.
+    const lines = meetingFrontmatter(text, meta).split('\n');
+    let last = lines.length - 1;
+    while (last > 0 && lines[last].trim() === '') last -= 1;
+    lines.splice(last + 1, 0, ...regionSkeleton());
+    this.files.set(path, lines.join('\n'));
     this.preparedNotes.push(path);
     return 'done';
   }
@@ -394,8 +392,9 @@ export class FakeNotesHost implements NotesHost {
     this.opened.push(path);
   }
 
-  notice(message: string): void {
+  notice(message: string, ms?: number): void {
     this.notices.push(message);
+    this.noticeMs.push(ms);
   }
 
   private sectionOptions(): SectionOptions & { linkPrefix: string } {

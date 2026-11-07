@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import {
   beginMarker,
   endMarker,
+  meetingFrontmatter,
   merge,
   mergeAll,
   parseCompanionProperties,
@@ -12,6 +13,7 @@ import {
   regionRange,
   REGIONS,
   renderCompanion,
+  splitTags,
   stripRegion,
   TRANSCRIPT_CALLOUT,
 } from '../src/notes/companion.ts';
@@ -649,6 +651,104 @@ describe('readCompanionKeys', () => {
   it('ignores nested keys and keys below the frontmatter', () => {
     const text = '---\nmeta:\n  date: 1999-01-01\ndate: 2026-10-09\n---\nhamster_source: "below#0"\n';
     assert.deepEqual(readCompanionKeys(text), { date: '2026-10-09', source: null });
+  });
+});
+
+describe('meetingFrontmatter', () => {
+  const MEETING = { date: '2026-10-09', source: 'Budget review#0' };
+  const OURS = 'type: meeting\ndate: 2026-10-09\ntags: [meeting, magical-hamster]\nhamster_source: "Budget review#0"';
+
+  /** The same call twice: the second changes nothing. */
+  function prepared(text: string, meta = MEETING): string {
+    const once = meetingFrontmatter(text, meta);
+    assert.equal(meetingFrontmatter(once, meta), once, 'a second call changes nothing');
+    return once;
+  }
+
+  it('puts a block of the four properties above a note that has none', () => {
+    assert.equal(prepared('# Budget\n\n- envelope 52k\n'), `---\n${OURS}\n---\n# Budget\n\n- envelope 52k\n`);
+    assert.equal(prepared(''), `---\n${OURS}\n---\n`);
+    assert.equal(prepared('﻿# Budget\n'), `﻿---\n${OURS}\n---\n# Budget\n`, 'after the byte order mark');
+    // An opening rule that never closes is not frontmatter.
+    assert.equal(prepared('---\nnot closed\n'), `---\n${OURS}\n---\n---\nnot closed\n`);
+  });
+
+  it('adds the absent keys above the closing line and keeps the rest of the block as typed', () => {
+    const text = '---\nauthor:   Fred  \nstatus: "open" # still\n---\n# Budget\n';
+    assert.equal(
+      prepared(text),
+      '---\nauthor:   Fred  \nstatus: "open" # still\ntype: meeting\ndate: 2026-10-09\ntags: [meeting, magical-hamster]\nhamster_source: "Budget review#0"\n---\n# Budget\n',
+    );
+    assert.deepEqual(readCompanionKeys(prepared(text)), { date: '2026-10-09', source: 'Budget review#0' });
+  });
+
+  it('keeps the type the note has', () => {
+    assert.match(prepared('---\ntype: note\n---\n'), /^---\ntype: note\ndate: /);
+    assert.doesNotMatch(prepared('---\ntype: note\n---\n'), /type: meeting/);
+  });
+
+  it('turns tags typed as one string into a list with the two of its own', () => {
+    assert.match(prepared('---\ntags: "a, b"\n---\n'), /^tags: \[a, b, meeting, magical-hamster\]$/m);
+    assert.match(prepared('---\ntags: "#work  project/x"\n---\n'), /^tags: \[work, project\/x, meeting, magical-hamster\]$/m);
+    assert.match(prepared('---\ntags: meeting\n---\n'), /^tags: \[meeting, magical-hamster\]$/m);
+    assert.match(prepared('---\ntags:\nstatus: open\n---\n'), /^tags: \[meeting, magical-hamster\]\nstatus: open$/m, 'an empty one');
+    // To YAML, `#work` after the space is a comment: the tags are none, and the comment stays.
+    assert.match(prepared('---\ntags: #work\n---\n'), /^tags: \[meeting, magical-hamster\] #work$/m);
+  });
+
+  it('adds the missing ones to a flow list, items as they were', () => {
+    assert.match(prepared('---\ntags: [meeting, "work"]\n---\n'), /^tags: \[meeting, "work", magical-hamster\]$/m);
+    assert.match(prepared('---\ntags: [#magical-hamster, meeting]\n---\n'), /^tags: \[#magical-hamster, meeting\]$/m);
+    assert.match(prepared('---\ntags: [] # none\n---\n'), /^tags: \[meeting, magical-hamster\] # none$/m);
+  });
+
+  it('adds the missing ones to a block list, at its indent', () => {
+    assert.equal(
+      prepared('---\ntags:\n  - work\n  - meeting\nstatus: open\n---\n'),
+      '---\ntags:\n  - work\n  - meeting\n  - magical-hamster\nstatus: open\ntype: meeting\ndate: 2026-10-09\nhamster_source: "Budget review#0"\n---\n',
+    );
+    assert.match(prepared('---\ntags:\n- work\n---\n'), /^tags:\n- work\n- meeting\n- magical-hamster\n/m);
+  });
+
+  it('leaves tags it cannot read alone', () => {
+    for (const tags of ['tags: {a: b}', 'tags: |\n  text', 'tags: [a,\n  b]', 'tags:\n  key: value']) {
+      const text = `---\n${tags}\n---\n`;
+      assert.ok(prepared(text).includes(`\n${tags}\n`), tags);
+    }
+  });
+
+  it('keeps a date that names the day, as a date or a date-time, and replaces one that does not', () => {
+    assert.match(prepared('---\ndate: 2026-10-09T10:00\n---\n'), /^date: 2026-10-09T10:00$/m);
+    assert.match(prepared('---\ndate: "2026-10-09"\n---\n'), /^date: "2026-10-09"$/m);
+    assert.match(prepared('---\ndate: 2026-10-08\n---\n'), /^date: 2026-10-09$/m);
+    assert.match(prepared('---\ndate: 2026-10-08T10:00\n---\n'), /^date: 2026-10-09$/m);
+    assert.match(prepared('---\ndate: 2026-10-08\n---\n', { ...MEETING, date: 'today' }), /^date: "today"$/m);
+  });
+
+  it('writes the source as a YAML string, whatever the title holds', () => {
+    const source = 'Budget "Q4" #2: review \\ plan — été#3';
+    const text = prepared('---\nhamster_source: "old#0"\n---\n', { ...MEETING, source });
+    assert.match(text, /^hamster_source: "Budget \\"Q4\\" #2: review \\\\ plan — été#3"$/m);
+    assert.equal(readCompanionKeys(text).source, source);
+  });
+
+  it('follows the line endings of the note', () => {
+    assert.equal(
+      prepared('---\r\ntype: note\r\ntags:\r\n  - work\r\n---\r\nbody\r\n'),
+      '---\r\ntype: note\r\ntags:\r\n  - work\r\n  - meeting\r\n  - magical-hamster\r\ndate: 2026-10-09\r\nhamster_source: "Budget review#0"\r\n---\r\nbody\r\n',
+    );
+    assert.equal(prepared('# Budget\r\nbody\r\n'), `---\r\n${OURS.replace(/\n/g, '\r\n')}\r\n---\r\n# Budget\r\nbody\r\n`);
+  });
+
+  it('changes nothing in a note that has it all', () => {
+    const text = renderCompanion({ ...META, source: MEETING.source });
+    assert.equal(meetingFrontmatter(text, MEETING), text);
+  });
+
+  it('splitTags reads tags separated by commas or spaces, without their #', () => {
+    assert.deepEqual(splitTags('#a, b  c'), ['a', 'b', 'c']);
+    assert.deepEqual(splitTags(' , '), []);
+    assert.deepEqual(splitTags('project/x,#y'), ['project/x', 'y']);
   });
 });
 

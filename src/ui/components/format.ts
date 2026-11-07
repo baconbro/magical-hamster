@@ -445,7 +445,7 @@ export function meetingsView(sections: readonly MeetingListEntry[], dailyExists:
 export const ANSWER_SOURCES_TEXT =
   'Ask a question below. Answers come from this meeting, the notes linked in its section, and the notes you indexed.';
 export const INDEX_SCOPE_TEXT =
-  'Besides this meeting and the notes linked in its section, answers only use the folders you choose. The index stays on this Mac.';
+  'Besides this meeting and the notes linked in its section, answers only use the folders you choose. The index stays on this computer.';
 
 /**
  * What "Create companion note" is about to write. A meeting tied to a section of the daily, or

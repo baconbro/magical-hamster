@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { startMicCapture } from '../audio/micCapture.ts';
 import type { MicCapture, MicCaptureOptions } from '../audio/micCapture.ts';
-import { defaultRuntimeDir, readRuntime, workerCommand } from '../host/runtime.ts';
+import { defaultRuntimeDir, readRuntime, workerCommand, workerOutdated } from '../host/runtime.ts';
 import type { RuntimeInfo, WorkerCommand } from '../host/runtime.ts';
 import type { Clock, LocalSettings, SttEvent, SttLanguage, SttState, TranscriptSource } from '../types.ts';
 import { SttProcess } from './sttProcess.ts';
@@ -19,6 +19,12 @@ export interface NodeSttSourceOptions {
   /** Read at each start: `nodePath`, `runtimeDir`, `micDeviceId`. */
   local(): LocalSettings;
   language(): SttLanguage;
+  /**
+   * The plugin's own version. A runtime set up by another major.minor is said
+   * to be outdated at each start, as a warning: the recording goes on with the
+   * worker there is. Absent, nothing is compared.
+   */
+  pluginVersion?: string;
 }
 
 /** A worker process that also tells when its pipes have been read to the end. A real ChildProcess satisfies it. */
@@ -44,6 +50,11 @@ const MIC_STOP_WAIT_MS = 1000;
 
 function nodeNotFound(path: string): string {
   return `Node was not found at ${path}. Set the path to Node in the plugin settings.`;
+}
+
+function outdatedWorker(worker: string | null, plugin: string): string {
+  const by = worker === null ? 'an earlier plugin version' : `plugin version ${worker}`;
+  return `The speech runtime was set up by ${by}; this is ${plugin}. Run the speech setup command again (Settings, Magical Hamster, Speech).`;
 }
 
 function isOver(state: SttState): boolean {
@@ -139,6 +150,13 @@ export function createTranscriptSourceWith(deps: NodeSttSourceDeps): TranscriptS
     if (!info) {
       setState('not-installed', NOT_SET_UP);
       throw new Error(NOT_SET_UP);
+    }
+    /* A warning, not a refusal: the worker there is still transcribes, and the
+       session says an error event with words once per recording. Before the
+       worker starts, so that it is heard whatever the start then does. */
+    const plugin = deps.pluginVersion;
+    if (plugin !== undefined && workerOutdated(info.workerVersion, plugin)) {
+      emitEvent({ type: 'error', code: 'worker_outdated', message: outdatedWorker(info.workerVersion, plugin) });
     }
     const command = workerCommand(info, {
       nodePath: local.nodePath,
@@ -283,6 +301,7 @@ export function createNodeTranscriptSource(opts: NodeSttSourceOptions): Transcri
     clock: opts.clock,
     local: () => opts.local(),
     language: () => opts.language(),
+    pluginVersion: opts.pluginVersion,
     readRuntime,
     baseEnv: () => process.env,
     spawn: (command) =>

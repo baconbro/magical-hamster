@@ -28,6 +28,7 @@ const RESUME_TIMEOUT_MS = 5000;
 const DENIED = 'Microphone access was denied. Allow Obsidian in System Settings, Privacy & Security, Microphone.';
 const NOT_FOUND = 'No microphone was found.';
 const DISCONNECTED = 'The microphone was disconnected.';
+const SUSPENDED = 'Audio capture was suspended by the system. Stop the recording and start it again.';
 
 /** An error whose message is already written for the user. */
 class CaptureError extends Error {}
@@ -128,6 +129,8 @@ export async function startMicCapture(opts: MicCaptureOptions): Promise<MicCaptu
   /** False once stopped or failed: nothing is delivered after that. */
   let live = true;
   let stopping: Promise<void> | null = null;
+  /** The system suspended the context once and it was brought back: a second time, the capture is given up. */
+  let resumedOnce = false;
 
   const fail = (error: Error): void => {
     if (!live) return;
@@ -139,6 +142,8 @@ export async function startMicCapture(opts: MicCaptureOptions): Promise<MicCaptu
   const release = async (): Promise<void> => {
     live = false;
     track?.removeEventListener('ended', onEnded);
+    // Closing the context below is a state change too, and not the system's doing.
+    if (ctx) ctx.onstatechange = null;
     if (node) {
       node.port.onmessage = null;
       node.onprocessorerror = null;
@@ -170,6 +175,23 @@ export async function startMicCapture(opts: MicCaptureOptions): Promise<MicCaptu
     if (!track) throw new CaptureError(NOT_FOUND);
     ctx = createContext();
     await resumeWithin(ctx, RESUME_TIMEOUT_MS);
+    /* Sleep, a change of output device or another app taking the audio session suspends the
+       context: the graph then stops without a word, the recording looks alive and the meter
+       freezes on its last peak. One resume is tried; after that, or when the context is closed
+       under us, the user is told to start again. */
+    const context = ctx;
+    context.onstatechange = () => {
+      if (!live) return;
+      // 'interrupted' on some platforms: anything that is not running and not closed is a suspension.
+      const state: string = context.state;
+      if (state === 'running') return;
+      if (state === 'closed' || resumedOnce) {
+        fail(new CaptureError(SUSPENDED));
+        return;
+      }
+      resumedOnce = true;
+      resumeWithin(context, RESUME_TIMEOUT_MS).catch(() => fail(new CaptureError(SUSPENDED)));
+    };
     await loadProcessor(ctx);
 
     source = ctx.createMediaStreamSource(stream);

@@ -41,10 +41,10 @@ node_modules/sherpa-onnx-node/
 node_modules/sherpa-onnx-darwin-arm64/
 models/<model dir>/
 models/<model dir>.sha256
-runtime.json     { node, runtimeDir, model, modelDir, chunkMs, sha256, sherpaVersion, installedAt }
+runtime.json     { node, runtimeDir, model, modelDir, chunkMs, sha256, sherpaVersion, workerVersion, installedAt }
 ```
 
-`runtime.json` is written only after a self-test passed: the worker transcribed one of the model's test recordings, or, for a model that came without any, loaded the library and the model on a second of silence. The plugin reads it by itself and needs no setting for it: it runs the worker with `node` (unless its **Node path** setting names another one) and hands `modelDir` to `--model`. It takes the directory it found the file in as the runtime directory, whatever `runtimeDir` says, and follows a `modelDir` recorded inside that directory when the directory was moved. Only a runtime installed somewhere else than the directory above has to be named, in the **Runtime folder** setting.
+`runtime.json` is written only after a self-test passed: the worker transcribed one of the model's test recordings, or, for a model that came without any, loaded the library and the model on a second of silence. The plugin reads it by itself and needs no setting for it: it runs the worker with `node` (unless its **Node path** setting names another one) and hands `modelDir` to `--model`. It takes the directory it found the file in as the runtime directory, whatever `runtimeDir` says, and follows a `modelDir` recorded inside that directory when the directory was moved. Only a runtime installed somewhere else than the directory above has to be named, in the **Runtime folder** setting. `workerVersion` is the plugin version the setup script came from (null when the script was run from a checkout without one): the plugin compares its major.minor with its own version and asks for the setup to be run again after a plugin update.
 
 ## Frames (stdin)
 
@@ -295,7 +295,7 @@ From the GitHub API, https://api.github.com/repos/k2-fsa/sherpa-onnx/releases/ta
 | `sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11.tar.bz2` | 475,271,763 | `c6bf5e0df765f9d5b43bc9e0536d4b4b3e7d40bdf5ecf13e45f134c51c05ae3a` |
 | `sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-1120ms-int8-2026-06-11.tar.bz2` | 475,276,334 | `adbdd5e9fef87300c37cebfcfc4f1ebe56845c860c8a760af0a1dd65ce9beed3` |
 
-Each is about 453 MiB. `pnpm setup:stt` takes the name, size and checksum from the API at install time and compares the download against the checksum; the table is here for a manual check.
+Each is about 453 MiB. `pnpm setup:stt` takes the name, size and checksum from the API at install time and compares the download against the checksum. The script also pins this table (`KNOWN_SHA256`, keyed by the asset names it builds itself): when the API cannot be asked, or names an asset without a digest, the download is checked against the pin instead, and the output says which of the two it was verified against. An archive nothing vouches for (a `--model-url` whose name is not in the table, or a newer build) stops the setup before the download unless `--sha256 <hex>` names its checksum from the release page, or `--no-verify` skips the check, which the output then says in so many words. The library is installed as `sherpa-onnx-node@1.13.8` exactly, with npm's install scripts off (neither package has any).
 
 According to the workflow that builds them (https://github.com/k2-fsa/sherpa-onnx/blob/master/.github/workflows/export-nemotron-3.5-asr-streaming-0.6b.yaml), an archive unpacks to one directory named like the archive without `.tar.bz2`, holding `encoder.int8.onnx`, `decoder.int8.onnx`, `joiner.int8.onnx`, `tokens.txt`, `README.md` and `test_wavs/` with `ar.wav`, `de.wav`, `es.wav`, `fr.wav`, `ja.wav`, `ko.wav`, `uk.wav`, `vi.wav`, `zh.wav`. There is no English clip, so the self-test in `pnpm setup:stt` uses `fr.wav`.
 

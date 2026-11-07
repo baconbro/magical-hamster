@@ -416,6 +416,28 @@ describe('summarize', () => {
     assert.equal(t.texts[1], 'Reading minutes 0–10…');
   });
 
+  it('cuts the shorthand, not the room for the transcript, when the context is small', async () => {
+    // 400 lines of notes, over 12,000 characters: more than a 4,096 context holds beside the summary.
+    const notes = Array.from({ length: 400 }, (_unused, i) => `line ${i} budget iam fin oct, vendor quote sso`);
+    assert.ok(notes.join('\n').length >= 12_000);
+    const t = setup({ numCtx: 4096 });
+    await summarize(t.deps, input({ shorthand: notes, style: 'recap' }), t.onText);
+
+    assert.equal(t.llm.requests.length, 1, 'a short transcript is still read in one pass');
+    const req = t.llm.requests[0];
+    const total = req.messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
+    assert.ok(total <= 4096 - 2000, `prompt of ${total} tokens fits beside the summary`);
+    const user = userOf(req);
+    assert.ok(user.includes('<shorthand>\nline 0 budget iam fin oct, vendor quote sso\n'));
+    assert.equal(user.includes('line 200 budget'), false);
+    assert.ok(user.includes('[00:05] Alex: We need the quote by Friday.'));
+
+    // With the context to spare, only the 12,000-character cap applies, and line 200 is within it.
+    const wide = setup();
+    await summarize(wide.deps, input({ shorthand: notes, style: 'recap' }), wide.onText);
+    assert.ok(userOf(wide.llm.requests[0]).includes('line 200 budget iam fin oct, vendor quote sso'));
+  });
+
   it('uses the schema for action items and never shows partial JSON', async () => {
     const t = setup();
     t.llm.reply = () =>

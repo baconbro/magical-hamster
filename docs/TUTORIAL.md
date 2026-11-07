@@ -30,7 +30,7 @@ Before using it, make sure you have:
 - macOS on Apple Silicon
 - Obsidian 1.13 or later
 - Ollama installed and running
-- Node 20 or later for the speech worker
+- Node 22 or later (a current LTS: 22 or 24) for the speech worker
 
 You also need the speech runtime installed once for the transcription engine.
 
@@ -55,13 +55,13 @@ In Obsidian, open Settings, Community plugins, Browse, search for "Magical Hamst
 
 ### Step 3: set up speech recognition
 
-Once, in Terminal (Applications, Utilities), with Node.js 20 or later installed:
+Once, in Terminal (Applications, Utilities), with Node.js 22 or later installed:
 
 ```bash
 curl -fsSL https://github.com/baconbro/magical-hamster/releases/latest/download/setup-speech.mjs -o setup-speech.mjs && node setup-speech.mjs
 ```
 
-This installs the speech library and downloads the speech model used for transcription (about 490 MB), into `~/Library/Application Support/magical-hamster`, outside your vault. Settings, Magical Hamster, Speech shows the same command, with a button that copies it.
+This installs the speech library (at an exact version, with npm's install scripts off) and downloads the speech model used for transcription (about 475 MB; its SHA-256 is checked against the one GitHub publishes, or the one pinned in the script when GitHub cannot be asked), into `~/Library/Application Support/magical-hamster`, outside your vault. Settings, Magical Hamster, Speech shows the same command, with a button that copies it.
 
 ---
 

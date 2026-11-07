@@ -2,29 +2,39 @@ name: Release
 
 # A tag equal to the plugin's version (0.2.0, without a "v") builds the release build and
 # publishes it: the three files Obsidian installs, and the speech setup script.
+#
+# Two jobs, so that no token that can write to the repository is in the job that runs the
+# packages' code: `build` has a read-only token and does not keep it in .git/config, and only
+# `publish`, which gets the files as an artifact, can create the release. The same tag can be
+# run again: the files of a release that already exists are replaced, its notes kept.
 on:
   push:
     tags:
       - '[0-9]+.[0-9]+.[0-9]+'
 
 permissions:
-  contents: write
-  # Signed build provenance for the release files (artifact attestations).
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
-  release:
+  build:
     runs-on: macos-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v5 # v5
+        with:
+          # The token is not needed after the checkout, and must not sit in .git/config while
+          # pnpm install, the tests and the build run.
+          persist-credentials: false
+          # The whole history: the tag has to be on main.
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4 # v4
+      - uses: actions/setup-node@v5 # v5
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: The tag, manifest.json and package.json give the same version
+      - name: The tag, manifest.json, package.json and versions.json give the same version
         run: |
           tag="${GITHUB_REF_NAME}"
           manifest=$(node -p "require('./manifest.json').version")
@@ -33,10 +43,55 @@ jobs:
             echo "Tag $tag, manifest.json $manifest, package.json $package: they must be the same."
             exit 1
           fi
-      - run: pnpm test
+          # Obsidian reads versions.json to know which app a version needs. scripts/release.mjs
+          # writes the entry; a release without it would be offered to apps too old for it.
+          node -e '
+            const tag = process.argv[1];
+            const entry = require("./versions.json")[tag];
+            const min = require("./manifest.json").minAppVersion;
+            if (entry !== min) {
+              console.error(`versions.json has ${JSON.stringify(entry)} for ${tag}; manifest.json needs ${min}. Run scripts/release.mjs.`);
+              process.exit(1);
+            }
+          ' "$tag"
+      - name: The tag is on main
+        # A release is built from the tagged commit; one tagged on another branch would ship code
+        # that main never had. HEAD is the tag's commit whether the tag is annotated or not.
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "$GITHUB_REF_NAME is not on main."
+            exit 1
+          fi
+      - run: pnpm install --frozen-lockfile
+      # The build typechecks first. It runs before the tests: a test reads the built stylesheet
+      # and skips without it.
       - run: pnpm build
+      - run: pnpm test
+      - name: Release notes, from CHANGELOG.md
+        run: node scripts/release-notes.mjs "$GITHUB_REF_NAME" > dist/notes.md
+      - uses: actions/upload-artifact@v4 # v4
+        with:
+          name: release
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      # Signed build provenance for the release files (artifact attestations).
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4 # v4
+        with:
+          name: release
+          path: dist
       - name: Attest that the files were built from this repository
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@v4 # v4
         with:
           subject-path: |
             dist/main.js
@@ -46,8 +101,18 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout in this job: gh is told which repository.
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            dist/main.js dist/manifest.json dist/styles.css dist/setup-speech.mjs \
-            --title "$GITHUB_REF_NAME" \
-            --notes "Install from Obsidian: Settings, Community plugins, Browse, Magical Hamster. Speech recognition: see the README."
+          files=(dist/main.js dist/manifest.json dist/styles.css dist/setup-speech.mjs)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # The workflow ran again for this tag: the files are replaced, the notes kept.
+            gh release upload "$TAG" "${files[@]}" --clobber
+          elif [ -s dist/notes.md ]; then
+            gh release create "$TAG" "${files[@]}" --verify-tag --title "$TAG" --notes-file dist/notes.md
+          else
+            # CHANGELOG.md has no section for this version.
+            gh release create "$TAG" "${files[@]}" --verify-tag --title "$TAG" \
+              --notes "Install from Obsidian: Settings, Community plugins, Browse, Magical Hamster. Speech recognition: see the README."
+          fi

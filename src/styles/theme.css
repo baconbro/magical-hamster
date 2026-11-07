@@ -11,10 +11,14 @@
  * 3. No dark block. Obsidian flips these tokens itself between light and dark.
  *
  * These are set on `.mh-root`, not in `@theme`: Obsidian defines its variables
- * on <body>, so a reference resolved at :root would find nothing.
+ * on <body>, so a reference resolved at :root would find nothing. The build's
+ * `@theme reference` (src/styles/tailwind.ts) names the same tokens, so that
+ * the utilities exist, and writes none of them anywhere.
  * ------------------------------------------------------------------------ */
 
 .mh-root {
+  /* Obsidian's own monospace font, for the `font-mono` utility. */
+  --font-mono:          var(--font-monospace, SFMono-Regular, Menlo, monospace);
   --color-surface:      var(--background-primary, #ffffff);
   --color-surface-alt:  var(--background-secondary, #f6f6f6);
   --color-ink:          var(--text-normal, #222222);

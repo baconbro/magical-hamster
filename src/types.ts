@@ -31,6 +31,8 @@ export type LinkPlacement = 'section-end' | 'heading';
 
 /** Synced with the vault (plugin data.json). */
 export interface HamsterSettings {
+  /** Format of data.json: `parseSettings` brings an older one up to date. */
+  settingsVersion: number;
   ollamaUrl: string;
   /** Generation model for summaries, Q&A and the Enhance button. */
   llmModel: string;
@@ -468,6 +470,11 @@ export interface VaultIndexStatus {
    * The list was changed in the settings since; "Rebuild index" applies it.
    */
   foldersPending?: boolean;
+  /**
+   * Set only when true: the index in memory was built with another embedding model or dimension
+   * than the settings hold, so no note is answered from it; "Build index" applies the current one.
+   */
+  modelPending?: boolean;
 }
 
 /** File access for the knowledge index. Obsidian + node:fs in the plugin, memory in the harness. */
@@ -928,4 +935,6 @@ export interface UiHost {
   renderMarkdown(markdown: string, el: HTMLElement): () => void;
   /** The exchanges with the model, for the Debug tab. Absent: no Debug tab. */
   callLog?: import('./llm/callLog.ts').CallLog;
+  /** The Terminal command that sets speech recognition up for this version of the plugin (`speechSetupCommand`). */
+  speechSetupCommand: string;
 }

@@ -1,19 +1,19 @@
-import { MarkdownView, Notice } from 'obsidian';
+import { MarkdownView } from 'obsidian';
 import type { App, TFile, WorkspaceLeaf } from 'obsidian';
 import { insertDailyLink, insertNoteLink } from '../editor/dailyLink.ts';
 import type { DailyNoteLocator } from '../editor/dailyNote.ts';
 import { entityNames, parseEntities } from '../editor/entities.ts';
-import { readCompanionKeys, regionSkeleton } from '../notes/companion.ts';
+import { meetingFrontmatter, readCompanionKeys, regionSkeleton } from '../notes/companion.ts';
 import type { CompanionStore } from '../notes/companionStore.ts';
 import type { TextTarget } from '../notes/textTarget.ts';
-import { stripFrontmatter } from '../rag/chunk.ts';
+import { headingTitle, stripFrontmatter } from '../rag/chunk.ts';
 import { softMarkerRegex } from '../settings.ts';
 import type { Entity, HamsterSettings, NotesHost } from '../types.ts';
 import { confirmWrite } from '../ui/ConfirmWriteModal.ts';
 import { truncate } from '../util/text.ts';
+import { showNotice } from './notice.ts';
 
 const MAX_LINKED_NOTES = 4;
-const NOTICE_PREFIX = 'Magical Hamster: ';
 
 export interface NotesHostDeps {
   settings(): HamsterSettings;
@@ -59,8 +59,7 @@ export function stripLinkedMentions(markdown: string): string {
       const level = heading[1].length;
       if (skipping && level > skipping) continue;
       skipping = 0;
-      const title = (heading[2] ?? '')
-        .replace(/[ \t]+#+[ \t]*$/, '')
+      const title = headingTitle(heading[2] ?? '')
         .replace(/[*_`]/g, '')
         .trim();
       if (/^linked mentions:?$/i.test(title)) {
@@ -159,12 +158,21 @@ export function createNotesHost(app: App, deps: NotesHostDeps): NotesHost {
     },
 
     async prepareMeetingNote(path, meta) {
-      const file = target.file(path);
-      if (!file) return 'missing';
       const current = await target.read(path);
       if (current === null) return 'missing';
       if (current.includes('<!-- hamster:begin')) return 'exists';
-      // The sections first, through the same path as every other write: the editor when it is open.
+      /* Both writes go through the same path as every other one: the editor
+         when the note is open in it, the Vault once its pending save is past.
+         The properties are edited as lines of the note, not through
+         processFrontMatter: that is a Vault write right after an editor edit,
+         which the editor's save would overwrite, and it rewrites the user's
+         YAML. They go first, so that a note left half done by `busy` is
+         finished by the next attempt, which changes nothing twice. */
+      const props = await target.edit(path, (text) =>
+        text.includes('<!-- hamster:begin') ? null : meetingFrontmatter(text, meta),
+      );
+      if (props === 'missing') return 'missing';
+      if (props === 'busy') return 'busy';
       const added = await target.insertLine(path, (text) => {
         if (text.includes('<!-- hamster:begin')) return null;
         const lines = text.split('\n');
@@ -175,15 +183,6 @@ export function createNotesHost(app: App, deps: NotesHostDeps): NotesHost {
       });
       if (added === 'missing') return 'missing';
       if (added === 'skipped') return 'busy';
-      // Then the properties, with Obsidian's own frontmatter editor: the existing ones stay.
-      await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
-        if (fm.type === undefined) fm.type = 'meeting';
-        fm.date = meta.date;
-        fm.hamster_source = meta.source;
-        const tags = Array.isArray(fm.tags) ? fm.tags.map(String) : typeof fm.tags === 'string' ? [fm.tags] : [];
-        for (const tag of ['meeting', 'magical-hamster']) if (!tags.includes(tag)) tags.push(tag);
-        fm.tags = tags;
-      });
       return 'done';
     },
 
@@ -246,7 +245,7 @@ export function createNotesHost(app: App, deps: NotesHostDeps): NotesHost {
     openNote(path) {
       const file = target.file(path);
       if (!file) {
-        new Notice(`${NOTICE_PREFIX}${path} is no longer in the vault.`);
+        showNotice(`${path} is no longer in the vault.`);
         return;
       }
       open(file).catch((error: unknown) => {
@@ -255,7 +254,7 @@ export function createNotesHost(app: App, deps: NotesHostDeps): NotesHost {
     },
 
     notice(message, ms) {
-      new Notice(NOTICE_PREFIX + message, ms);
+      showNotice(message, ms);
     },
   };
 }

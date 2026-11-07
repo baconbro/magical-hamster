@@ -1,20 +1,22 @@
 import { join } from 'node:path';
-import { MarkdownView, Notice, Plugin, TFile } from 'obsidian';
+import { MarkdownView, Plugin, TFile, normalizePath } from 'obsidian';
 import type { Events, WorkspaceLeaf } from 'obsidian';
 import { DailyNoteLocator } from './editor/dailyNote.ts';
 import { liveCaptureExtension } from './editor/liveCapture.ts';
 import { loadLocal, saveLocal } from './host/localSettings.ts';
 import { createCallLog, withCallLog, type CallLogWriter } from './llm/callLog.ts';
 import { createNotesHost } from './host/notesHost.ts';
+import { showNotice } from './host/notice.ts';
 import { reloadBlocker, reloadPlugin, startSelfReload } from './host/selfReload.ts';
-import { defaultRuntimeDir, readRuntime, resolveRuntimeDir } from './host/runtime.ts';
+import { defaultRuntimeDir, readRuntime, resolveNodePath, resolveRuntimeDir } from './host/runtime.ts';
 import { createStatsIO } from './host/statsIO.ts';
 import { createVaultIndexIO } from './host/vaultIndexIO.ts';
 import { createOllamaClient } from './llm/ollama.ts';
 import { CompanionStore } from './notes/companionStore.ts';
 import { TextTarget, bufferFileField } from './notes/textTarget.ts';
+import { speechSetupCommand } from './project.ts';
 import { createSession } from './session/meetingSession.ts';
-import { DEFAULT_LOCAL, DEFAULT_SETTINGS, VIEW_TYPE, withDefaults } from './settings.ts';
+import { DEFAULT_LOCAL, DEFAULT_SETTINGS, PLUGIN_ID, VIEW_TYPE, parseSettings } from './settings.ts';
 import { HamsterSettingTab, checkSoftMarkerPattern } from './settings-tab.ts';
 import { createNodeTranscriptSource } from './stt/nodeSttSource.ts';
 import type { Clock, HamsterSession, HamsterSettings, LocalSettings, UiHost } from './types.ts';
@@ -27,7 +29,6 @@ import { remoteHostWarning } from './util/loopback.ts';
 const DATE_CHECK_MS = 60_000;
 const QUIT_FLUSH_MS = 3000;
 const EDITOR_SECOND_LOOK_MS = 150;
-const NOTICE_PREFIX = 'Magical Hamster: ';
 const REMOTE_OLLAMA_NOTICE_MS = 15_000;
 const RELOAD_NOTICE_MS = 10_000;
 const PATTERN_NOTICE_MS = 15_000;
@@ -64,8 +65,19 @@ export default class MagicalHamsterPlugin extends Plugin {
   async onload(): Promise<void> {
     const { app } = this;
     const { vault, workspace } = app;
-    this.settings = withDefaults((await this.loadData()) as Partial<HamsterSettings> | null);
+    const stored: unknown = await this.loadData();
+    this.settings = parseSettings(stored);
     this.local = loadLocal(app);
+    /* Obsidian answers null for a data.json it cannot parse, as for none at
+       all. The defaults are then in use, and the next change of a setting
+       would write over the file: said once, so that a hand edit or a sync
+       conflict can be put right first. */
+    if (stored === null && (await this.dataFileExists())) {
+      showNotice(
+        'The settings file (data.json in the plugin folder) could not be read, so the defaults are in use. Fix or delete it before changing a setting, or the next change writes over it.',
+        0,
+      );
+    }
 
     const locator = new DailyNoteLocator(app);
     await locator.load();
@@ -88,30 +100,44 @@ export default class MagicalHamsterPlugin extends Plugin {
       companions,
     });
     /* The folder the setting stands for: the default when empty, the home
-       directory for a leading `~`. Resolved here and nowhere else, so that the
-       speech source, the stats file, the index and the settings tab agree. */
+       directory for a leading `~`, a relative folder taken from home. Resolved
+       here and nowhere else, so that the speech source, the stats file, the
+       index and the settings tab agree. The Node path is expanded the same way:
+       a `~` spawned as typed is a relative path that exists nowhere. */
     const runtimeDir = (): string => resolveRuntimeDir(this.local.runtimeDir);
+    const local = (): LocalSettings => ({
+      ...this.local,
+      runtimeDir: runtimeDir(),
+      nodePath: resolveNodePath(this.local.nodePath),
+    });
     /* Where the stats and the index are read and written until Obsidian starts
        again. The session loads both once, at start: following the setting
        while it is typed would create a folder for each character, and would
        then write what was loaded from the old folder over what the new one holds. */
     const ioDir = runtimeDir();
+    /* The plugin's own version: the setup command names its release, so that
+       the worker installed is the one this build was made with, and a runtime
+       set up by another major.minor is pointed out. The manifest is Obsidian's
+       to give; the tests' stub may give none. */
+    const pluginVersion = this.manifest?.version ?? null;
+    const setupCommand = speechSetupCommand(pluginVersion);
 
     const callLog = createCallLog({ clock, enabled: this.local.debugTab });
     this.callLog = callLog;
     const session = createSession({
       settings: () => this.usableSettings(),
       updateSettings: (patch) => this.updateSettings(patch),
-      local: () => this.local,
+      local,
       setLocal: (patch) => this.setLocal(patch),
       notes,
       llm: withCallLog(createOllamaClient({ baseUrl: () => this.settings.ollamaUrl, clock }), callLog),
       createTranscriptSource: () =>
         createNodeTranscriptSource({
           clock,
-          // The source takes the folder as it is written: it gets the resolved one.
-          local: () => ({ ...this.local, runtimeDir: runtimeDir() }),
+          // The source takes the paths as they are written: it gets the resolved ones.
+          local,
           language: () => this.settings.sttLanguage,
+          pluginVersion: pluginVersion ?? undefined,
         }),
       vaultIndexIO: createVaultIndexIO(app, () => ioDir),
       statsIO: createStatsIO(() => ioDir),
@@ -129,7 +155,7 @@ export default class MagicalHamsterPlugin extends Plugin {
        Obsidian's: that one hands its output to every plugin's post-processor
        (Dataview runs a `dataviewjs` block) and fetches images and raw tags as
        it draws them. See src/ui/miniMarkdown.ts. */
-    const host: UiHost = { renderMarkdown: renderMiniMarkdown, callLog };
+    const host: UiHost = { renderMarkdown: renderMiniMarkdown, callLog, speechSetupCommand: setupCommand };
     this.registerView(
       VIEW_TYPE,
       (leaf: WorkspaceLeaf) =>
@@ -252,7 +278,7 @@ export default class MagicalHamsterPlugin extends Plugin {
       callback: () => {
         const on = !this.local.debugTab;
         this.setLocal({ debugTab: on });
-        new Notice(on ? 'Debug tab shown: exchanges with the model are kept in memory.' : 'Debug tab hidden; its log is cleared.');
+        showNotice(on ? 'Debug tab shown: exchanges with the model are kept in memory.' : 'Debug tab hidden; its log is cleared.');
       },
     });
     this.addCommand({
@@ -292,6 +318,8 @@ export default class MagicalHamsterPlugin extends Plugin {
         defaultRuntimeDir,
         runtimeDir,
         readRuntime,
+        speechSetupCommand: setupCommand,
+        pluginVersion,
       }),
     );
 
@@ -433,13 +461,13 @@ export default class MagicalHamsterPlugin extends Plugin {
         buildId,
         blocker: () => reloadBlocker(session.store.getState()),
         subscribe: (listener) => session.store.subscribe(listener),
-        notify: (message) => new Notice(message, RELOAD_NOTICE_MS),
+        notify: (message) => showNotice(message, RELOAD_NOTICE_MS),
         reload: () =>
           reloadPlugin({
             app: this.app,
             id: this.manifest.id,
             viewType: VIEW_TYPE,
-            notify: (message) => new Notice(`${NOTICE_PREFIX}${message}`),
+            notify: (message) => showNotice(message),
             // Everything written first; the unload then finds the session already closed.
             closeSession: () => session.dispose(),
           }),
@@ -470,10 +498,21 @@ export default class MagicalHamsterPlugin extends Plugin {
   /** data.json changed on disk: another device synced its settings. */
   async onExternalSettingsChange(): Promise<void> {
     const previous = this.settings.ollamaUrl;
-    this.settings = withDefaults((await this.loadData()) as Partial<HamsterSettings> | null);
+    this.settings = parseSettings(await this.loadData());
     this.session?.handleSettingsChange();
     // Nobody at this computer chose the new address: it is said, and stays said until it is read.
     if (this.settings.ollamaUrl !== previous) this.warnOfRemoteOllama('synced');
+  }
+
+  /** Whether the plugin's data.json is on disk, whatever it holds. */
+  private async dataFileExists(): Promise<boolean> {
+    const { vault } = this.app;
+    const path = normalizePath(`${vault.configDir}/plugins/${this.manifest?.id ?? PLUGIN_ID}/data.json`);
+    try {
+      return await vault.adapter.exists(path);
+    } catch {
+      return false;
+    }
   }
 
   private async updateSettings(patch: Partial<HamsterSettings>): Promise<void> {
@@ -515,8 +554,8 @@ export default class MagicalHamsterPlugin extends Plugin {
       (this.app.loadLocalStorage(CHECKED_PATTERN_KEY) !== source && checkSoftMarkerPattern(source) !== null);
     this.checkedPattern = { source, refused };
     if (refused) {
-      new Notice(
-        `${NOTICE_PREFIX}The pattern for meeting lines without a heading is empty, invalid or too slow, and is not used. Change it in the settings.`,
+      showNotice(
+        'The pattern for meeting lines without a heading is empty, invalid or too slow, and is not used. Change it in the settings.',
         PATTERN_NOTICE_MS,
       );
     } else {
@@ -530,13 +569,13 @@ export default class MagicalHamsterPlugin extends Plugin {
     const warning = remoteHostWarning(this.settings.ollamaUrl);
     if (warning === null) return;
     if (why === 'synced') {
-      new Notice(
-        `${NOTICE_PREFIX}The Ollama address changed with the settings synced from another device. ${warning} Change the address in the settings if that is not what you want.`,
+      showNotice(
+        `The Ollama address changed with the settings synced from another device. ${warning} Change the address in the settings if that is not what you want.`,
         0,
       );
       return;
     }
-    new Notice(`${NOTICE_PREFIX}${warning} The Ollama address is in the settings.`, REMOTE_OLLAMA_NOTICE_MS);
+    showNotice(`${warning} The Ollama address is in the settings.`, REMOTE_OLLAMA_NOTICE_MS);
   }
 
   private setLocal(patch: Partial<LocalSettings>): void {

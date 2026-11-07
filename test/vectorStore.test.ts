@@ -74,6 +74,8 @@ test('a vector or a query of the wrong length is refused', () => {
   assert.equal(store.size, 0);
   store.upsert('a', unit([1, 0, 0]), { label: 'A' });
   assert.throws(() => store.search(new Float32Array(4), 1), /Vector length mismatch: expected 3, got 4/);
+  // Named, so that an index can tell it from a failure of one chunk: the next vector is as wrong.
+  assert.throws(() => store.upsert('b', new Float32Array(2), { label: 'B' }), { kind: 'dimension' });
   assert.throws(() => new VectorStore<Meta>(0), /Invalid vector dimension/);
   assert.throws(() => new VectorStore<Meta>(1.5), /Invalid vector dimension/);
 });

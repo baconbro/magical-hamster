@@ -57,13 +57,33 @@ export function companionBasename(prefix: string, date: string, title: string): 
   return `${prefix}${date} — ${sanitizeTitle(title)}`;
 }
 
+/** True when a vault path holds a `.` or `..` segment: one that restates or leaves the folder it is in. */
+export function hasDotSegments(path: string): boolean {
+  return path.split('/').some((segment) => segment === '.' || segment === '..');
+}
+
+/**
+ * A folder setting as the vault folder it names: without outer or doubled
+ * slashes, and without `.` or `..` segments. Obsidian's normalizePath keeps
+ * those, and a folder that climbs out of what was typed is never what the
+ * user meant: the settings tab refuses them, and a value that arrived by
+ * sync loses them here, the last step before a path is written.
+ */
+export function vaultFolder(folder: string): string {
+  return folder
+    .trim()
+    .split('/')
+    .filter((segment) => segment !== '' && segment !== '.' && segment !== '..')
+    .join('/');
+}
+
 /** Vault path of a new companion: ` (2)`, ` (3)`... is added while the path is taken. */
 export function companionPath(
   folder: string,
   basename: string,
   exists: (path: string) => boolean,
 ): string {
-  const dir = folder.trim().replace(/^\/+/, '').replace(/\/+$/, '');
+  const dir = vaultFolder(folder);
   const stem = dir === '' ? basename : `${dir}/${basename}`;
   let path = `${stem}.md`;
   for (let n = 2; exists(path) && n <= MAX_COLLISION_SUFFIX; n++) {

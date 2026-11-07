@@ -2278,6 +2278,49 @@ describe('saving to the companion', () => {
     assert.equal(env.state().shorthand.length, 4);
   });
 
+  it('writes each line once when the note is renamed while a batch is being written', async () => {
+    const env = await withCompanion();
+    const moved = '10 Work/Meetings/Mtg-2026-10-09 — 1-1 Jane Example.md';
+    await env.c.startRecording();
+    const source = env.world.sources[0];
+    source.say('Written before the move.', 1, 2);
+    await pass(env.world, 5200);
+
+    /* The rename lands while the host is reading the note for the batch. Obsidian's TFile
+       follows it, and the host answers `missing` rather than write into the renamed note
+       (textTarget.ts): the session, told of the rename, sends the batch again under the new
+       path, from the last line known to be in the note. */
+    const write = env.world.notes.writeCompanion.bind(env.world.notes);
+    let caught = 0;
+    env.world.notes.writeCompanion = async (path, patches) => {
+      if (path !== JANE_NOTE) return write(path, patches);
+      caught += 1;
+      env.world.notes.writeCompanion = write;
+      env.world.notes.files.set(moved, env.world.notes.files.get(JANE_NOTE) ?? '');
+      env.world.notes.files.delete(JANE_NOTE);
+      env.session.handleVaultChange({ type: 'rename', path: moved, oldPath: JANE_NOTE });
+      return { status: 'missing' };
+    };
+    source.say('In the batch the rename caught.', 3, 4);
+    await pass(env.world, 5200);
+    assert.equal(caught, 1, 'the batch was in flight when the note moved');
+    assert.equal(env.state().meeting?.companionPath, moved);
+    source.say('Written after the move.', 5, 6);
+    await pass(env.world, 5200);
+    assert.deepEqual(region(env, moved, 'transcript').trimEnd().split('\n').slice(1), [
+      '> **[00:01] Fred:** Written before the move.',
+      '> **[00:03] Fred:** In the batch the rename caught.',
+      '> **[00:05] Fred:** Written after the move.',
+    ]);
+    assert.deepEqual(env.world.notes.notices, []);
+    assert.equal(env.state().pendingWrites, 0);
+    // Nothing is left to send a second time, at the stop or when the note is adopted again.
+    await until(env.world, env.c.stopRecording());
+    await env.c.createCompanion();
+    await pass(env.world, 5200);
+    assert.equal(region(env, moved, 'transcript').match(/the rename caught/g)?.length, 1);
+  });
+
   it('sends again the transcript lines a damaged region refused', async () => {
     const env = await withCompanion();
     await env.c.startRecording();
@@ -2492,13 +2535,13 @@ describe('saving to the companion', () => {
     assert.match(lines[3], /Said while the file was locked\.$/);
   });
 
-  it('still writes, after the meeting ended, what its last flush did not wait for', async () => {
+  it('waits at the end of the meeting for the third try of a write that failed', async () => {
     const env = await withCompanion();
     await env.c.startRecording();
     const write = env.world.notes.writeCompanion.bind(env.world.notes);
     let failures = 0;
     env.world.notes.writeCompanion = async (path, patches) => {
-      // Locked for the two tries the end of the meeting waits for, free for the third.
+      // Locked for the two tries the stop waits for, free for the third, which End waits for.
       if (failures < 2) {
         failures += 1;
         throw new Error('The file is locked.');
@@ -2508,12 +2551,68 @@ describe('saving to the companion', () => {
     env.world.sources[0].say('Said just before the meeting ended.', 1, 2);
     await until(env.world, env.c.endMeeting());
     assert.equal(env.state().meeting, null);
-    await pass(env.world, 4000, 100);
+    assert.equal(failures, 2);
     assert.equal(
       region(env, JANE_NOTE, 'transcript'),
       '> [!quote]- Transcript\n> **[00:01] Fred:** Said just before the meeting ended.\n',
     );
     assert.deepEqual(env.world.notes.notices, []);
+  });
+
+  it('waits at the end of the meeting for a write to be given up, and says so', async () => {
+    const env = await withCompanion();
+    await env.c.startRecording();
+    let attempts = 0;
+    env.world.notes.writeCompanion = async () => {
+      attempts += 1;
+      throw new Error('The vault is read-only.');
+    };
+    env.world.sources[0].say('The last words of the meeting.', 1, 2);
+    const asked = env.world.clock.now();
+    await until(env.world, env.c.endMeeting());
+    // The stop waited for two tries; End waited for the third, which gave the batch up and said so
+    // while the meeting was still there to send it once more.
+    assert.equal(attempts, 3);
+    assert.ok(env.world.clock.now() - asked >= 4000);
+    assert.equal(env.state().meeting, null);
+    assert.deepEqual(env.world.notes.notices, ['The companion note could not be saved. The vault is read-only.']);
+
+    // That last try comes after End, and is given up in its turn: its meeting is gone, so the
+    // user at least hears which note to look at.
+    await pass(env.world, 12_000, 100);
+    assert.equal(attempts, 6);
+    assert.deepEqual(env.world.notes.notices, [
+      'The companion note could not be saved. The vault is read-only.',
+      'The last lines could not be saved to Mtg-2026-10-09 — 1-1 Jane Example.',
+    ]);
+    // Once: nothing sends them again.
+    await pass(env.world, 60_000, 1000);
+    assert.equal(attempts, 6);
+    assert.equal(env.world.notes.notices.length, 2);
+  });
+
+  it('names the note the last lines could not be saved to when another meeting was selected meanwhile', async () => {
+    const env = await withCompanion();
+    await env.c.startRecording();
+    let attempts = 0;
+    env.world.notes.writeCompanion = async () => {
+      attempts += 1;
+      throw new Error('The vault is read-only.');
+    };
+    env.world.sources[0].say('The last words of the meeting.', 1, 2);
+    // The stop waits for two tries; the third comes once the user has moved on.
+    await until(env.world, env.c.stopRecording());
+    assert.equal(attempts, 2);
+    env.c.selectSection(BOARD);
+    assert.equal(env.state().meeting?.key, BOARD);
+    assert.deepEqual(env.world.notes.notices, []);
+
+    await pass(env.world, 2000, 100);
+    assert.equal(attempts, 3);
+    assert.deepEqual(env.world.notes.notices, ['The last lines could not be saved to Mtg-2026-10-09 — 1-1 Jane Example.']);
+    await pass(env.world, 60_000, 1000);
+    assert.equal(attempts, 3);
+    assert.equal(env.world.notes.notices.length, 1);
   });
 
   it('uses the label of the microphone channel from settings', async () => {
@@ -2963,6 +3062,24 @@ describe('recording', () => {
     assert.deepEqual(env.world.notes.notices.slice(2), [unsupported]);
   });
 
+  it('says once that the speech runtime was set up by another plugin version, and records on', async () => {
+    const env = await boot();
+    env.c.selectSection(JANE);
+    await env.c.startRecording();
+    const source = env.world.sources[0];
+    // What the node source says before its worker starts (nodeSttSource.ts), as a warning, not a failure.
+    const outdated =
+      'The speech runtime was set up by plugin version 0.1.4; this is 0.2.0. Run the speech setup command again (Settings, Magical Hamster, Speech).';
+
+    source.emit({ type: 'error', code: 'worker_outdated', message: outdated });
+    source.emit({ type: 'error', code: 'worker_outdated', message: outdated });
+    assert.deepEqual(env.world.notes.notices, [outdated]);
+    assert.equal(env.state().recording, 'recording');
+    assert.equal(env.state().recordingError, null);
+    assert.notEqual(env.state().stt, 'failed', 'the worker there is still transcribes');
+    assert.notEqual(env.state().stt, 'not-installed');
+  });
+
   it('ignores a stop when nothing is being recorded', async () => {
     const env = await boot();
     env.c.selectSection(JANE);
@@ -3156,6 +3273,89 @@ describe('recording', () => {
     assert.equal(env.state().turns.length, 2);
   });
 
+  it('keeps the sentence the worker was still hearing at the stop, as a final of this meeting', async () => {
+    const env = await withCompanion();
+    await env.c.startRecording();
+    const source = env.world.sources[0];
+    source.say('First things first.', 1, 3);
+    // Killed at the end of its grace, the worker sends no final for it.
+    source.emit({ type: 'segment', source: 'mic', t0: 26.1, t1: 29.6, text: 'Honnêtement, on est un peu en retard', isFinal: false });
+    await until(env.world, env.c.stopRecording());
+    assert.deepEqual(
+      env.state().turns.map((turn) => [turn.text, turn.t0]),
+      [
+        ['First things first.', 1],
+        ['Honnêtement, on est un peu en retard', 26.1],
+      ],
+    );
+    assert.equal(env.state().partial, null);
+    assert.match(region(env, JANE_NOTE, 'transcript'), /on est un peu en retard\n$/);
+
+    // Nothing of it lingers: in the next meeting, a worker that fails before its first word has
+    // no partial of this one to keep.
+    await until(env.world, env.c.endMeeting());
+    env.c.newMeeting();
+    assert.equal(env.state().meeting?.manual, true);
+    env.world.prepareSource = (next) => {
+      next.startError = new Error('The speech worker could not start.');
+    };
+    await env.c.startRecording();
+    assert.equal(env.state().recording, 'idle');
+    assert.deepEqual(env.state().turns, []);
+    assert.equal(env.state().partial, null);
+  });
+
+  it('drops what the worker was hearing when the start is cancelled: nothing was recorded', async () => {
+    const env = await boot();
+    env.c.selectSection(JANE);
+    let open = (): void => {};
+    env.world.prepareSource = (source) => {
+      source.startGate = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+    };
+    const starting = env.c.startRecording();
+    assert.equal(env.state().recording, 'starting');
+    const source = env.world.sources[0];
+    source.partial('is this thing on');
+    assert.deepEqual(env.state().partial, { source: 'mic', text: 'is this thing on' });
+    await env.c.stopRecording();
+    open();
+    await starting;
+    assert.equal(env.state().recording, 'idle');
+    assert.equal(env.state().partial, null);
+    assert.deepEqual(env.state().turns, []);
+
+    // Not in the next recording either, whose worker fails before its first word.
+    env.world.prepareSource = (next) => {
+      next.startError = new Error('The speech worker could not start.');
+    };
+    await env.c.startRecording();
+    assert.deepEqual(env.state().turns, []);
+  });
+
+  it('says once per recording that transcription has fallen far behind', async () => {
+    const env = await boot();
+    env.c.selectSection(JANE);
+    await env.c.startRecording();
+    const source = env.world.sources[0];
+    const behind = (): string[] => env.world.notes.notices.filter((notice) => notice.startsWith('Transcription is running'));
+    source.emit({ type: 'stats', rtf: 0.9, backlogMs: 12_000 });
+    assert.deepEqual(behind(), []);
+    source.emit({ type: 'stats', rtf: 1.6, backlogMs: 31_400 });
+    source.emit({ type: 'stats', rtf: 1.8, backlogMs: 58_000 });
+    assert.deepEqual(behind(), [
+      'Transcription is running 31 s behind: the computer is busy. It catches up by itself; stopping and starting the recording again drops the backlog.',
+    ]);
+
+    // The next recording starts with an empty queue, and warns again if it builds one.
+    await until(env.world, env.c.stopRecording());
+    await env.c.startRecording();
+    env.world.sources[1].emit({ type: 'stats', rtf: 1.5, backlogMs: 30_000 });
+    assert.equal(behind().length, 2);
+    assert.match(behind()[1], /^Transcription is running 30 s behind/);
+  });
+
   it('keeps recording when the transcript is lost', async () => {
     const env = await boot();
     env.c.selectSection(JANE);
@@ -3241,7 +3441,7 @@ describe('recording', () => {
     const before = env.world.notes.notices.length;
     await env.c.startRecording();
     env.world.sources[1].setState('not-installed');
-    assert.deepEqual(env.world.notes.notices.slice(before), ['Transcription is not installed on this Mac.']);
+    assert.deepEqual(env.world.notes.notices.slice(before), ['Transcription is not installed on this computer.']);
     assert.equal(env.world.notes.notices[before], STT_NOT_INSTALLED_FALLBACK);
   });
 
@@ -3911,6 +4111,37 @@ describe('questions', () => {
       env.state().qa.entries[0].sources.map((source) => [source.kind, source.time]),
       [['transcript', '00:02']],
     );
+  });
+
+  it('embeds the transcript again when the embedding model or its dimensions change during the meeting', async () => {
+    const env = await boot();
+    env.c.selectSection(BOARD);
+    await env.c.startRecording();
+    env.world.sources[0].say('The steering committee moved the cutover to March.', 0, 40);
+    env.world.sources[0].say('The vendor contract runs until the cutover weekend.', 40, 80);
+    await settle();
+    assert.equal(env.world.llm.embeds.length, 2, 'one request per stretch');
+
+    // Saved in the settings tab: vectors of 768 floats cannot answer a query of 256.
+    env.world.setSettings({ embedDimensions: 256 });
+    env.session.handleSettingsChange();
+    await settle();
+    assert.equal(env.world.llm.embeds.length, 4, 'both stretches are embedded again');
+    assert.ok(env.world.llm.embeds.slice(2).every((req) => req.dimensions === 256), 'with the new dimension');
+
+    env.world.llm.answer = (req) => (isQuestion(req) ? 'In March [1].' : '### Overview\nA summary.');
+    await env.c.ask('When is the cutover, according to the steering committee?');
+    assert.deepEqual(
+      env.state().qa.entries[0].sources.map((source) => [source.kind, source.time]),
+      [['transcript', '00:00']],
+    );
+
+    // A setting that leaves the embedding space alone embeds nothing.
+    const embeds = env.world.llm.embeds.length;
+    env.world.setSettings({ micLabel: 'Mic (room)' });
+    env.session.handleSettingsChange();
+    await settle();
+    assert.equal(env.world.llm.embeds.length, embeds);
   });
 
   it('hands the model the last fifteen minutes of talk, the newest lines when they do not all fit', async () => {
@@ -6066,6 +6297,39 @@ describe('settings changed while the plugin runs', () => {
     await settle();
     assert.equal(env.state().ollama.remoteHost, null);
   });
+
+  it('says that the index was built with another embedding model, until it is rebuilt', async () => {
+    const env = await boot({ index: true });
+    await env.c.buildIndex(['10 Work']);
+    assert.equal(env.state().index.status, 'ready');
+    assert.equal(env.state().index.modelPending, undefined);
+
+    env.world.llm.installed = ['gemma4:12b', 'other-embedder:1b'];
+    env.world.setSettings({ embedModel: 'other-embedder:1b' });
+    env.session.handleSettingsChange();
+    await settle();
+    assert.equal(env.state().index.modelPending, true, 'the sidebar can say so');
+    assert.equal(env.state().index.status, 'ready');
+    assert.equal(env.state().index.files, 2, 'the index itself waits for a rebuild');
+
+    // Nothing of it is answered from meanwhile.
+    env.world.llm.answer = () => 'The notes do not say.';
+    await env.c.ask('What is the training budget for this year?');
+    assert.deepEqual(env.state().qa.entries[0].sources, []);
+    assert.doesNotMatch(userMessage(env.world.llm.chats.at(-1) as ChatRequest), /40000 dollars/);
+
+    const embeds = env.world.llm.embeds.length;
+    await env.c.buildIndex(env.state().index.folders);
+    assert.equal(env.state().index.status, 'ready');
+    assert.equal(env.state().index.modelPending, undefined);
+    assert.ok(env.world.llm.embeds.slice(embeds).some((req) => req.model === 'other-embedder:1b'), 'built with the new model');
+
+    // A setting that leaves the model alone does not redraw the block.
+    const before = env.state().index;
+    env.world.setSettings({ micLabel: 'Mic (room)' });
+    env.session.handleSettingsChange();
+    assert.equal(env.state().index, before);
+  });
 });
 
 describe('the notes a question reads', () => {
@@ -6256,6 +6520,18 @@ describe('a recorded meeting that is in no note yet', () => {
     assert.equal(env.state().turns.length, 0);
     assert.equal(env.world.notes.notices.length, 3);
     assert.deepEqual([...env.world.notes.files.keys()].filter((path) => path.includes('Mtg-')), []);
+  });
+
+  it('keeps its notice on screen for as long as the same request still discards', async () => {
+    const env = await recordedOnly();
+    env.c.selectSection(BOARD);
+    assert.match(env.world.notes.notices.at(-1) ?? '', NOT_SAVED);
+    assert.equal(env.world.notes.noticeMs.at(-1), 15_000, 'the fifteen seconds of the window');
+    // Any other notice keeps Obsidian's own duration.
+    await env.c.writeIntoActiveNote();
+    assert.match(env.world.notes.notices.at(-1) ?? '', /Open the note to write the meeting into first/);
+    assert.equal(env.world.notes.noticeMs.at(-1), undefined);
+    assert.equal(env.world.notes.noticeMs.length, env.world.notes.notices.length);
   });
 
   it('is kept when the companion is created instead, and then left without a word', async () => {

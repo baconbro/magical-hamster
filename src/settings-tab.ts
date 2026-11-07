@@ -1,10 +1,16 @@
-import { Notice, PluginSettingTab, Setting, normalizePath } from 'obsidian';
+import { isAbsolute } from 'node:path';
+import { PluginSettingTab, Setting, normalizePath } from 'obsidian';
 import type { App, DropdownComponent, Plugin, TextComponent } from 'obsidian';
-import { softMarkerUnsupported } from './settings.ts';
+import { showNotice } from './host/notice.ts';
+import { isInside, workerOutdated } from './host/runtime.ts';
+import { SETTING_RANGES, addressProblem, checkPrefix, softMarkerUnsupported } from './settings.ts';
+import type { NumberRule } from './settings.ts';
+export { checkPrefix } from './settings.ts';
+export type { NumberRule } from './settings.ts';
 import { remoteHostWarning } from './util/loopback.ts';
 import type { HamsterSettings, LocalSettings } from './types.ts';
-import { SPEECH_SETUP_COMMAND } from './project.ts';
 import { parseCompanionProperties } from './notes/companion.ts';
+import { hasDotSegments } from './notes/sanitize.ts';
 
 export interface SettingsTabDeps {
   settings(): HamsterSettings;
@@ -18,11 +24,17 @@ export interface SettingsTabDeps {
   runtimeDir(): string;
   /** The speech runtime installed in that directory, or null. `node` is the Node its setup recorded. */
   readRuntime(runtimeDir: string): InstalledRuntime | null;
+  /** The Terminal command that sets speech up for this version of the plugin (`speechSetupCommand` in project.ts). */
+  speechSetupCommand: string;
+  /** The plugin's own version, to tell a runtime set up by another one; null when the manifest has none. */
+  pluginVersion: string | null;
 }
 
 export interface InstalledRuntime {
   model: string;
   node: string;
+  /** The plugin version the setup that wrote the runtime came from; null when it recorded none. */
+  workerVersion: string | null;
 }
 
 /* Text fields are saved once typing pauses: every save makes the session
@@ -50,9 +62,12 @@ const PROBE_OWN_STARTS = 12;
 const TOO_SLOW =
   'This pattern is too slow on a long line and would freeze typing. Avoid a repetition inside a repetition, such as (a+)+.';
 
-const ILLEGAL_IN_FILE_NAME = /[[\]#^|/\\:*?"<>\r\n]/;
-
 const OLLAMA_HERE = 'Where Ollama listens on this computer.';
+
+const RUNTIME_FOLDER_DESC =
+  'Holds the speech model, the knowledge index and the stats, outside the vault. Leave empty for the default. This device only. A new folder is used for speech at the next recording, and for the index and the stats the next time Obsidian starts. Nothing is copied into it.';
+const RUNTIME_IN_VAULT =
+  'This folder is inside the vault: the model, the index and the stats would be synced with your notes. Choose a folder outside it.';
 
 // Where Homebrew puts Node on Apple silicon: an example of what the field takes.
 const NODE_PATH_EXAMPLE = '/opt/homebrew/bin/node';
@@ -63,12 +78,6 @@ type TextKey = { [K in Keys<string>]: string extends HamsterSettings[K] ? K : ne
 type ChoiceKey = Exclude<Keys<string>, TextKey>;
 type NumberKey = Keys<number>;
 type ToggleKey = Keys<boolean>;
-
-export interface NumberRule {
-  min: number;
-  max: number;
-  integer?: boolean;
-}
 
 /** The number typed into a field, or null when it is not one the rule accepts. */
 export function parseNumber(text: string, rule: NumberRule): number | null {
@@ -292,33 +301,50 @@ export function describeOllamaAddress(address: string): { text: string; warning:
   };
 }
 
-function isHttpAddress(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
+/**
+ * What to add under the runtime folder, or null when there is nothing to say:
+ * where a relative folder really is (`resolveRuntimeDir` takes it from the
+ * home folder, not from Obsidian's working directory), and that a folder
+ * inside the vault (`vaultBase`, where the adapter can say) would have the
+ * model, the index and the stats synced along with the notes. The setting is
+ * this device's own and never synced, so neither is a matter of trust: it is
+ * what the user would not expect.
+ */
+export function describeRuntimeFolder(typed: string, resolved: string, vaultBase: string | null): string | null {
+  const notes: string[] = [];
+  const folder = typed.trim();
+  // `~` and `~/…` are the home folder itself; anything else that is not absolute is taken from it.
+  if (folder !== '' && folder !== '~' && !folder.startsWith('~/') && !isAbsolute(folder)) {
+    notes.push(`A relative folder is taken from your home folder: ${resolved}.`);
   }
+  const base = vaultBase?.trim() ?? '';
+  if (base !== '' && isInside(resolved, base)) notes.push(RUNTIME_IN_VAULT);
+  return notes.length === 0 ? null : notes.join(' ');
 }
 
-/** Why a companion prefix must not be saved, or null when it may. */
-export function checkPrefix(prefix: string): string | null {
-  if (prefix.trim() === '') return 'Enter a prefix. Companion notes are found by it.';
-  if (ILLEGAL_IN_FILE_NAME.test(prefix)) return 'A file name cannot contain [ ] # ^ | / \\ : * ? " < >';
-  if (prefix.startsWith('.')) return 'A file name that starts with a dot is hidden.';
-  return null;
-}
-
-/** Folders as typed, one per line: as vault paths (Obsidian's normalizePath), without duplicates. `/` is the whole vault. */
+/**
+ * Folders as typed, one per line: as vault paths (Obsidian's normalizePath),
+ * without duplicates. `/` is the whole vault. A line with a `.` or `..`
+ * segment names no folder of the vault and is left out.
+ */
 export function parseFolderList(text: string): string[] {
   const folders: string[] = [];
   for (const line of text.split('\n')) {
     const raw = line.trim();
     if (raw === '') continue;
     const folder = normalizePath(raw);
+    if (hasDotSegments(folder)) continue;
     if (!folders.includes(folder)) folders.push(folder);
   }
   return folders;
+}
+
+const DOT_SEGMENTS = 'A folder path cannot contain . or .. segments.';
+
+/** A typed folder as a vault path, or why it cannot be one. */
+function readFolder(raw: string): { value: string } | { error: string } {
+  const value = cleanPath(raw);
+  return hasDotSegments(value) ? { error: DOT_SEGMENTS } : { value };
 }
 
 /**
@@ -328,6 +354,22 @@ export function parseFolderList(text: string): string[] {
  */
 export function nodePathPlaceholder(installed: { node: string } | null): string {
   return installed?.node.trim() || NODE_PATH_EXAMPLE;
+}
+
+/**
+ * What the Speech runtime row says: the model installed, and, when the setup
+ * that wrote it came from another major.minor of the plugin than this one, that
+ * the setup is to be run again. The worker only changes when the setup runs.
+ */
+export function describeInstalledRuntime(
+  installed: InstalledRuntime | null,
+  pluginVersion: string | null,
+): { text: string; warning: boolean } {
+  if (installed === null) return { text: 'Not installed. Set it up with the command below.', warning: false };
+  const text = `Installed: ${installed.model}`;
+  if (pluginVersion === null || !workerOutdated(installed.workerVersion, pluginVersion)) return { text, warning: false };
+  const by = installed.workerVersion === null ? 'an earlier plugin version' : `plugin version ${installed.workerVersion}`;
+  return { text: `${text} Set up by ${by} (this is ${pluginVersion}); run the setup command again.`, warning: true };
 }
 
 function cleanPath(value: string): string {
@@ -412,9 +454,9 @@ export class HamsterSettingTab extends PluginSettingTab {
         ),
         this.number(
           'Context size',
-          'Tokens the model reads at once, sent with every request. Changing it reloads the model in Ollama.',
+          'Tokens the model reads at once, sent with every request. At least 4096; 16384 recommended. Changing it reloads the model in Ollama.',
           'numCtx',
-          { min: 1024, max: 1048576, integer: true },
+          SETTING_RANGES.numCtx,
         ),
         this.text(
           'Embedding model',
@@ -427,13 +469,13 @@ export class HamsterSettingTab extends PluginSettingTab {
           'Embedding context size',
           'Tokens per passage. Changing it reloads the embedding model in Ollama.',
           'embedNumCtx',
-          { min: 128, max: 32768, integer: true },
+          SETTING_RANGES.embedNumCtx,
         ),
         this.number(
           'Embedding dimensions',
           'Length of each vector. After changing it, build the knowledge index again.',
           'embedDimensions',
-          { min: 32, max: 8192, integer: true },
+          SETTING_RANGES.embedDimensions,
         ),
       ]),
 
@@ -442,7 +484,7 @@ export class HamsterSettingTab extends PluginSettingTab {
           'Companion folder',
           'Where companion notes are created. The folder is created when missing. Empty means the vault root.',
           'companionFolder',
-          (raw) => ({ value: cleanPath(raw) }),
+          readFolder,
         ),
         this.text(
           'Companion prefix',
@@ -497,7 +539,7 @@ export class HamsterSettingTab extends PluginSettingTab {
           'Entity registry',
           'Optional. Vault path of a note that lists people, projects and governance bodies, to recognize meetings and attendees (see the README). Empty: none.',
           'entitiesPath',
-          (raw) => ({ value: cleanPath(raw) }),
+          readFolder,
         ),
         this.text(
           'Meeting lines without a heading',
@@ -515,7 +557,7 @@ export class HamsterSettingTab extends PluginSettingTab {
             setting.addButton((button) =>
               button.setButtonText('Ask again before the first write').onClick(() => {
                 this.deps.setLocal({ firstWriteConfirmed: false });
-                new Notice('Magical Hamster: The confirmation will be shown before the next first write.');
+                showNotice('The confirmation will be shown before the next first write.');
               }),
             );
           },
@@ -538,13 +580,13 @@ export class HamsterSettingTab extends PluginSettingTab {
           'Typing pause',
           'Milliseconds without typing before live enhance runs.',
           'enhanceDebounceMs',
-          { min: 200, max: 60000, integer: true },
+          SETTING_RANGES.enhanceDebounceMs,
         ),
         this.number(
           'Longest wait',
           'Milliseconds after which live enhance runs even while typing continues.',
           'enhanceMaxWaitMs',
-          { min: 500, max: 300000, integer: true },
+          SETTING_RANGES.enhanceMaxWaitMs,
         ),
       ]),
 
@@ -593,32 +635,32 @@ export class HamsterSettingTab extends PluginSettingTab {
             },
           },
         ),
-        this.localText(
-          'Runtime folder',
-          'Holds the speech model, the knowledge index and the stats, outside the vault. Leave empty for the default. This device only. A new folder is used for speech at the next recording, and for the index and the stats the next time Obsidian starts. Nothing is copied into it.',
-          'runtimeDir',
-          () => this.deps.defaultRuntimeDir(),
-          { changed: () => this.showRuntime() },
-        ),
+        this.localText('Runtime folder', RUNTIME_FOLDER_DESC, 'runtimeDir', () => this.deps.defaultRuntimeDir(), {
+          changed: (setting) => {
+            this.showRuntime();
+            this.describeRuntimeFolder(setting);
+          },
+          drawn: (_field, setting) => this.describeRuntimeFolder(setting),
+        }),
         row('Speech runtime', 'Whether the speech model is installed in the runtime folder.', (setting) => {
           this.showRuntime = () => {
             const installed = this.installedRuntime();
             // Each runtime folder records its own Node: the empty field shows the one it would run.
             this.showNodePlaceholder(nodePathPlaceholder(installed));
-            setting.setDesc(
-              installed ? `Installed: ${installed.model}` : 'Not installed. Set it up with the command below.',
-            );
+            const { text, warning } = describeInstalledRuntime(installed, this.deps.pluginVersion);
+            setting.setDesc(text);
+            setting.descEl.toggleClass('mod-warning', warning);
           };
           this.showRuntime();
         }),
         row(
           'Set up speech recognition',
-          `Once, in Terminal (Applications, Utilities), with Node.js 20 or later installed. It downloads about 490 MB, the sherpa-onnx speech library from npm and the speech model from GitHub, into the runtime folder; run it again to repair or update. For a runtime folder of your own, add --runtime and the folder. The command (the button copies it): ${SPEECH_SETUP_COMMAND} (in Terminal).`,
+          `Once, in Terminal (Applications, Utilities), with Node.js 22 or later installed. It downloads about 475 MB, the sherpa-onnx speech library from npm and the speech model from GitHub, into the runtime folder; run it again to repair or update. For a runtime folder of your own, add --runtime and the folder. The command (the button copies it): ${this.deps.speechSetupCommand} (in Terminal).`,
           (setting) => {
             setting.addButton((button) => {
               button.setButtonText('Copy command').onClick(() => {
-                navigator.clipboard.writeText(SPEECH_SETUP_COMMAND).then(
-                  () => new Notice('Setup command copied: paste it into Terminal.'),
+                navigator.clipboard.writeText(this.deps.speechSetupCommand).then(
+                  () => showNotice('Setup command copied: paste it into Terminal.'),
                   (error: unknown) => console.error('Magical Hamster: could not copy', error),
                 );
               });
@@ -646,7 +688,7 @@ export class HamsterSettingTab extends PluginSettingTab {
           'Cost per 1,000 tokens',
           'In dollars. Used for the figure of what running on this computer saved.',
           'costPer1k',
-          { min: 0, max: 1000 },
+          SETTING_RANGES.costPer1k,
         ),
       ]),
 
@@ -703,10 +745,11 @@ export class HamsterSettingTab extends PluginSettingTab {
         field.setValue(this.deps.settings().ollamaUrl);
         field.onChange((raw) => {
           const value = raw.trim();
-          if (!isHttpAddress(value)) {
+          const problem = addressProblem(value);
+          if (problem !== null) {
             // Not saved: the last valid value stays in use, and it is the one described.
             delete this.held.ollamaUrl;
-            setting.setErrorMessage('Enter an address such as http://localhost:11434');
+            setting.setErrorMessage(problem);
             describe(this.deps.settings().ollamaUrl);
             return;
           }
@@ -802,7 +845,10 @@ export class HamsterSettingTab extends PluginSettingTab {
     desc: string,
     key: 'nodePath' | 'runtimeDir',
     placeholder: () => string,
-    { changed, drawn }: { changed?: () => void; drawn?: (field: TextComponent) => void } = {},
+    {
+      changed,
+      drawn,
+    }: { changed?: (setting: Setting) => void; drawn?: (field: TextComponent, setting: Setting) => void } = {},
   ): Row {
     return row(name, desc, (setting) => {
       setting.addText((field) => {
@@ -810,11 +856,24 @@ export class HamsterSettingTab extends PluginSettingTab {
         field.setPlaceholder(placeholder());
         field.onChange((raw) => {
           this.deps.setLocal({ [key]: raw.trim() });
-          changed?.();
+          changed?.(setting);
         });
-        drawn?.(field);
+        drawn?.(field, setting);
       });
     });
+  }
+
+  /** Under the runtime folder: where a relative one really is, and that one inside the vault would be synced. */
+  private describeRuntimeFolder(setting: Setting): void {
+    const note = describeRuntimeFolder(this.deps.local().runtimeDir, this.deps.runtimeDir(), this.vaultBase());
+    setting.setDesc(note === null ? RUNTIME_FOLDER_DESC : `${RUNTIME_FOLDER_DESC} ${note}`);
+    setting.descEl.toggleClass('mod-warning', note !== null);
+  }
+
+  /** The vault's own folder on disk, where the adapter can say so (feature-detected, as main.ts does). */
+  private vaultBase(): string | null {
+    const adapter = this.app.vault.adapter as { getBasePath?: () => string };
+    return adapter.getBasePath?.() ?? null;
   }
 
   private microphone(): Row {
@@ -901,7 +960,7 @@ export class HamsterSettingTab extends PluginSettingTab {
     if (Object.keys(patch).length === 0) return;
     this.deps.updateSettings(patch).catch((error: unknown) => {
       console.error('Magical Hamster: could not save the settings', error);
-      new Notice('Magical Hamster: The settings could not be saved.');
+      showNotice('The settings could not be saved.');
     });
   }
 }

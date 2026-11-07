@@ -8,7 +8,19 @@
 export const REPOSITORY = 'baconbro/magical-hamster';
 export const REPOSITORY_URL = `https://github.com/${REPOSITORY}`;
 export const SPEECH_SETUP_SCRIPT = 'setup-speech.mjs';
-/** One line to paste into Terminal. */
-export const SPEECH_SETUP_COMMAND = `curl -fsSL ${REPOSITORY_URL}/releases/latest/download/${SPEECH_SETUP_SCRIPT} -o ${SPEECH_SETUP_SCRIPT} && node ${SPEECH_SETUP_SCRIPT}`;
+
+/**
+ * One line to paste into Terminal. Given the plugin's own version it names
+ * that release, so that the worker it installs is the one this plugin was
+ * built with: the latest release could be newer than the plugin, or older
+ * than a build from the repository. Without one (no manifest, or a version
+ * that is not a release's), the latest release.
+ */
+export function speechSetupCommand(version: string | null): string {
+  const release = version !== null && /^\d+\.\d+\.\d+$/.test(version) ? `releases/download/${version}` : 'releases/latest/download';
+  return `curl -fsSL ${REPOSITORY_URL}/${release}/${SPEECH_SETUP_SCRIPT} -o ${SPEECH_SETUP_SCRIPT} && node ${SPEECH_SETUP_SCRIPT}`;
+}
+/** The command for whatever release is the latest: what the README prints. */
+export const SPEECH_SETUP_COMMAND = speechSetupCommand(null);
 /** The README's section on it: what it downloads, where it goes, how to remove it. */
 export const SPEECH_SETUP_HELP = `${REPOSITORY_URL}#speech-recognition`;

@@ -3,6 +3,14 @@
   "private": true,
   "version": "0.1.4",
   "description": "Meeting assistant for Obsidian: live transcript, enhanced notes, summaries and Q&A, all on-device.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/baconbro/magical-hamster"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite --config vite.dev.config.ts",
@@ -26,7 +34,7 @@
     "@codemirror/state": "6.7.6",
     "@codemirror/view": "6.43.13",
     "@tailwindcss/vite": "^4.3.3",
-    "@types/node": "^22.0.0",
+    "@types/node": "^24.0.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.1.0",

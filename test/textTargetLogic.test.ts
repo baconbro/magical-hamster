@@ -142,10 +142,11 @@ class FakeVault {
   }
 
   async process(file: FakeFile, fn: (data: string) => string): Promise<string> {
-    // As Obsidian does: the path is taken when the call is made, and read a moment later.
-    const path = file.path;
+    // As Obsidian does: the call returns at once and the file is read a moment later. A TFile
+    // follows a rename, so a note renamed meanwhile is read, and written, under its new path.
     await settle();
     this.duringRead?.();
+    const path = file.path;
     const entry = this.files.get(path);
     if (!entry) throw new Error('ENOENT');
     const next = fn(entry.data);
@@ -1322,6 +1323,147 @@ describe('TextTarget.insertLine', () => {
   });
 });
 
+describe('TextTarget.edit', () => {
+  const NOTE = '---\ntype: note\n---\nbody\n';
+  const addDate = (text: string): string => text.replace('type: note\n', 'type: note\ndate: 2026-10-09\n');
+
+  it('edits through the editor with one replaceRange over the span that differs, so the user can undo it', async () => {
+    const h = new Harness();
+    h.vault.add('note.md', NOTE);
+    const editor = h.open('note.md');
+    // The cursor on the "o" of "body".
+    editor.select(NOTE.indexOf('body') + 1);
+
+    const via = await h.target.edit('note.md', (text) => {
+      assert.equal(text, NOTE);
+      return addDate(text);
+    });
+
+    assert.equal(via, 'editor');
+    assert.equal(editor.getValue(), addDate(NOTE));
+    assert.deepEqual(editor.replaceCalls, [
+      { text: 'date: 2026-10-09\n', from: { line: 2, ch: 0 }, to: { line: 2, ch: 0 }, origin: EDIT_ORIGIN },
+    ]);
+    const tr = editor.transactions[0];
+    assert.notEqual(tr.annotation(Transaction.addToHistory), false, 'the change stays in the undo history');
+    assert.equal(editor.getValue().slice(editor.selection().from), 'ody\n', 'the cursor stays on its text');
+    assert.deepEqual(h.vault.writes, []);
+  });
+
+  it('hands fn the text as it is at write time, and reads a result in Windows line endings as the editor would', async () => {
+    const h = new Harness();
+    h.vault.add('note.md', 'first');
+    const editor = h.open('note.md');
+    editor.replaceRange('\ntyped just now', { line: 0, ch: 5 });
+
+    let seen = '';
+    const via = await h.target.edit('note.md', (text) => {
+      seen = text;
+      return `${text}\r\nadded\r\n`;
+    });
+
+    assert.equal(seen, 'first\ntyped just now');
+    assert.equal(via, 'editor');
+    assert.equal(editor.getValue(), 'first\ntyped just now\nadded\n');
+    assert.equal(editor.replaceCalls.length, 2, 'the typing, then one change');
+  });
+
+  it('answers unchanged, and touches nothing, when fn returns null or the same text', async () => {
+    const h = new Harness();
+    h.vault.add('note.md', NOTE);
+    const editor = h.open('note.md');
+    assert.equal(await h.target.edit('note.md', () => null), 'unchanged');
+    assert.equal(await h.target.edit('note.md', (text) => text), 'unchanged');
+    assert.equal(editor.transactions.length, 0);
+
+    const closed = new Harness();
+    closed.vault.add('note.md', NOTE);
+    assert.equal(await closed.target.edit('note.md', () => null), 'unchanged');
+    assert.equal(await closed.target.edit('note.md', (text) => text), 'unchanged');
+    assert.deepEqual(closed.vault.writes, []);
+  });
+
+  it('writes through the Vault when the note is not open, or is in Reading view', async () => {
+    const h = new Harness();
+    h.vault.add('note.md', NOTE);
+    assert.equal(await h.target.edit('note.md', addDate), 'vault');
+    assert.equal(h.vault.text('note.md'), addDate(NOTE));
+
+    const reading = new Harness();
+    reading.vault.add('note.md', NOTE);
+    const editor = reading.open('note.md', { mode: 'preview' });
+    assert.equal(await reading.target.edit('note.md', addDate), 'vault');
+    assert.equal(reading.vault.text('note.md'), addDate(NOTE));
+    assert.equal(editor.transactions.length, 0);
+  });
+
+  it('waits out the cooldown before a Vault write', async () => {
+    const h = new Harness();
+    h.vault.add('note.md', NOTE);
+    h.touches.set('note.md', h.time - 2000);
+    const started = h.time;
+
+    assert.equal(await h.target.edit('note.md', addDate), 'vault');
+
+    assert.ok(h.time - started >= 500, 'the remaining half second was waited');
+    assert.ok(h.sleeps.every((ms) => ms > 0 && ms <= 250), 'polled in short steps');
+    assert.equal(h.vault.text('note.md'), addDate(NOTE));
+  });
+
+  it('gives up without writing when the note stays busy', async () => {
+    const h = new Harness();
+    h.vault.add('note.md', NOTE);
+    h.touches.set('note.md', h.time);
+    h.onSleep = () => h.touches.set('note.md', h.time);
+    const started = h.time;
+    let computed = 0;
+
+    const via = await h.target.edit('note.md', (text) => {
+      computed += 1;
+      return addDate(text);
+    });
+
+    assert.equal(via, 'busy');
+    assert.equal(computed, 0);
+    assert.deepEqual(h.vault.writes, []);
+    assert.equal(h.vault.text('note.md'), NOTE);
+    assert.ok(h.time - started >= 6000 && h.time - started < 7000, 'gave up after about six seconds');
+  });
+
+  it('switches to the editor when the note is opened while it waits', async () => {
+    const h = new Harness();
+    h.vault.add('note.md', NOTE);
+    h.touches.set('note.md', h.time);
+    let editor: FakeEditor | null = null;
+    h.onSleep = () => {
+      editor ??= h.open('note.md');
+    };
+
+    assert.equal(await h.target.edit('note.md', addDate), 'editor');
+    assert.ok(editor);
+    assert.equal((editor as FakeEditor).getValue(), addDate(NOTE));
+    assert.deepEqual(h.vault.writes, []);
+  });
+
+  it('does not write when typing starts while the file is being read, and tries again', async () => {
+    const h = new Harness();
+    h.vault.add('note.md', NOTE);
+    h.vault.duringRead = () => {
+      h.vault.duringRead = null;
+      h.touches.set('note.md', h.time);
+    };
+
+    assert.equal(await h.target.edit('note.md', addDate), 'vault');
+    assert.deepEqual(h.vault.writes, ['note.md'], 'exactly one write, after the cooldown');
+    assert.ok(h.sleeps.length > 0);
+  });
+
+  it('answers missing when there is no such file', async () => {
+    const h = new Harness();
+    assert.equal(await h.target.edit('note.md', addDate), 'missing');
+  });
+});
+
 describe('insertDailyLink', () => {
   const opts: SectionOptions = { softMarker: /^(1:1|Ad ?Hoc|Prep|Steering|Rencontre)\b/i, linkPrefix: 'Mtg-' };
   const basename = 'Mtg-2026-10-09 — 1-1 Jane Example';
@@ -1674,6 +1816,34 @@ describe('CompanionStore', () => {
     h.frontmatter.set('Mtg-a.md', { type: 'note' });
     h.companions.refresh('Mtg-a.md');
     assert.equal(h.companions.find(DATE, 'Steering#0'), null);
+  });
+
+  it('keeps its index through a save that leaves the companion\'s keys as they were', async () => {
+    const h = new Harness();
+    const files = h.vault.getMarkdownFiles.bind(h.vault);
+    let walks = 0;
+    h.vault.getMarkdownFiles = () => {
+      walks += 1;
+      return files();
+    };
+    await h.companions.create('Mtg-a.md', companionText(), key);
+    h.frontmatter.set('Mtg-a.md', frontmatter);
+    // A meeting it does not know: the one answer that needs the vault walked.
+    assert.equal(h.companions.find(DATE, 'Other#0'), null);
+    assert.equal(walks, 1);
+
+    // The companion was written to, as it is every few seconds during a meeting: its keys did not move.
+    h.companions.refresh('Mtg-a.md');
+    assert.equal(h.companions.find(DATE, 'Other#0'), null);
+    assert.equal(walks, 1, 'no new walk');
+    assert.equal(h.companions.find(DATE, KEY_SOURCE), 'Mtg-a.md');
+
+    // Its keys were changed by hand: the index is built again, and the new key answers.
+    h.frontmatter.set('Mtg-a.md', { date: DATE, hamster_source: 'Steering#0' });
+    h.companions.refresh('Mtg-a.md');
+    assert.equal(h.companions.find(DATE, KEY_SOURCE), null);
+    assert.equal(walks, 2);
+    assert.equal(h.companions.find(DATE, 'Steering#0'), 'Mtg-a.md');
   });
 
   it('follows a change of the companion prefix', () => {
@@ -2355,6 +2525,13 @@ describe('review: saving what went into an editor (the quit hook)', () => {
 });
 
 describe('review: a note renamed between the decision and the write', () => {
+  /*
+   * The fake vault hands `process` the text of the note wherever it is by the time it reads, as
+   * Obsidian does through the TFile. The text must then go nowhere: the caller decided about the
+   * note at the old path, and the session, told of the rename, sends region patches again under
+   * the new one. Landed here as well, each transcript line would be in the note twice.
+   */
+
   /** Moves the note as Obsidian does: the same file object under a new path. */
   function rename(h: Harness, from: string, to: string): void {
     const entry = h.vault.files.get(from);
@@ -2373,7 +2550,8 @@ describe('review: a note renamed between the decision and the write', () => {
 
     assert.deepEqual(outcome, { status: 'missing' });
     assert.deepEqual(h.vault.writes, []);
-    assert.equal(h.vault.text('30 Archive/Mtg-moved.md'), companionText());
+    assert.equal(h.vault.getFileByPath(COMPANION_PATH), null, 'nothing was created at the old path');
+    assert.equal(h.vault.text('30 Archive/Mtg-moved.md'), companionText(), 'the renamed note is as it was');
   });
 
   it('answers missing for the link line instead of failing, and writes it nowhere', async () => {
@@ -2383,6 +2561,7 @@ describe('review: a note renamed between the decision and the write', () => {
 
     assert.equal(await h.target.insertLine('daily.md', () => ({ afterLine: 0, text: 'added' })), 'missing');
     assert.deepEqual(h.vault.writes, []);
+    assert.equal(h.vault.getFileByPath('daily.md'), null);
     assert.equal(h.vault.text('yesterday.md'), 'first\nsecond');
   });
 
@@ -2391,6 +2570,18 @@ describe('review: a note renamed between the decision and the write', () => {
     h.vault.add('Mtg-a.md', companionText());
     h.vault.duringRead = () => rename(h, 'Mtg-a.md', 'Mtg-b.md');
     assert.equal(await h.target.rewrite('Mtg-a.md', (data) => `${data}x`), 'missing');
+    assert.deepEqual(h.vault.writes, []);
+    assert.equal(h.vault.getFileByPath('Mtg-a.md'), null);
     assert.equal(h.vault.text('Mtg-b.md'), companionText());
+  });
+
+  it('writes to the note under its new path when asked for it there', async () => {
+    const h = new Harness();
+    h.vault.add(COMPANION_PATH, companionText());
+    rename(h, COMPANION_PATH, '30 Archive/Mtg-moved.md');
+    const outcome = await h.target.writeRegions('30 Archive/Mtg-moved.md', [{ region: 'summary', content: 'A short summary.' }]);
+    assert.deepEqual(outcome, { status: 'ok' });
+    assert.deepEqual(h.vault.writes, ['30 Archive/Mtg-moved.md']);
+    assert.equal(readRegion(h.vault.text('30 Archive/Mtg-moved.md'), 'summary'), 'A short summary.\n');
   });
 });

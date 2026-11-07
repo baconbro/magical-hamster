@@ -50,7 +50,7 @@ export interface BannerInputs {
   cursorOutside: boolean;
 }
 
-export const STT_NOT_INSTALLED_FALLBACK = 'Transcription is not installed on this Mac.';
+export const STT_NOT_INSTALLED_FALLBACK = 'Transcription is not installed on this computer.';
 export const STT_FAILED_FALLBACK = 'Transcription stopped. The recording continues without a transcript.';
 
 /* What the companion calls its sections (the headings `notes/companion.ts` writes above each

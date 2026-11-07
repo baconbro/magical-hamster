@@ -19,7 +19,7 @@ Everything runs on your own computer: the writing and retrieval models through [
 - **A Mac with Apple silicon** (M1 or later) for speech recognition. The plugin installs on any desktop, but transcription only runs on these Macs.
 - Obsidian 1.13 or later, desktop.
 - [Ollama](https://ollama.com), running. A Mac with 16 GB of memory or more is recommended for the default model.
-- [Node.js](https://nodejs.org) 20 or later (the LTS version), to run speech recognition. Obsidian cannot run it itself.
+- [Node.js](https://nodejs.org) 22 or later (a current LTS: 22 or 24), to run speech recognition. Obsidian cannot run it itself.
 
 ## Install
 
@@ -46,13 +46,13 @@ The plugin does not download or install anything itself. Speech recognition is s
 curl -fsSL https://github.com/baconbro/magical-hamster/releases/latest/download/setup-speech.mjs -o setup-speech.mjs && node setup-speech.mjs
 ```
 
-It downloads the setup script attached to the plugin's latest release, and runs it with your Node.js. The script:
+It downloads the setup script attached to the plugin's latest release, and runs it with your Node.js. Settings, Magical Hamster, Speech shows the command for the version you have installed; run it again after a plugin update. The script:
 
-- installs the speech library, `sherpa-onnx-node` and `sherpa-onnx-darwin-arm64`, from the npm registry (about 10 MB);
-- downloads the Nemotron 3.5 ASR streaming model (int8, 560 ms) from the [sherpa-onnx releases on GitHub](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models), about 475 MB, checks its SHA-256 against the one GitHub publishes for it, and unpacks it (about 685 MB);
+- installs the speech library, `sherpa-onnx-node` and `sherpa-onnx-darwin-arm64`, from the npm registry (about 10 MB), at an exact version and with npm's install scripts off;
+- downloads the Nemotron 3.5 ASR streaming model (int8, 560 ms) from the [sherpa-onnx releases on GitHub](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models), about 475 MB, checks its SHA-256 against the one GitHub publishes for it (or, when GitHub cannot be asked, against the one pinned in the script), and unpacks it (about 685 MB);
 - writes the speech worker's scripts, transcribes a test recording, and records the result in `runtime.json`.
 
-Everything goes into `~/Library/Application Support/magical-hamster/`. Add `--dry-run` to see what it would do without doing it, and `--runtime <folder>` to use another folder (then name it in the settings, **Runtime folder**). Run it again to repair the runtime or to update the speech worker after a plugin update: it skips what is already there.
+Everything goes into `~/Library/Application Support/magical-hamster/`. Add `--dry-run` to see what it would do without doing it, and `--runtime <folder>` to use another folder (then name it in the settings, **Runtime folder**). `--model-url <url>` takes the model archive from a mirror or a file already downloaded, with `--sha256 <hex>` (from the release page) as its checksum; `--no-verify` skips the check, and the output says so. Run it again to repair the runtime or to update the speech worker after a plugin update: it skips what is already there.
 
 ## Privacy, network and files
 

@@ -49,7 +49,7 @@ import type { SectionOptions } from '../editor/sectionAt.ts';
 import { EnhanceEngine, cleanBullet } from '../llm/enhance.ts';
 import type { EnhanceEngineDeps } from '../llm/enhance.ts';
 import { modelInstalled } from '../llm/ollama.ts';
-import { answerQuestion, buildSources, citedSources, formatInsight, lastSentence, questionsIn } from '../llm/qa.ts';
+import { answerQuestion, buildSources, citedSources, formatInsight, lastSentence, qaSourceBudget, questionsIn } from '../llm/qa.ts';
 import { LlmQueue } from '../llm/queue.ts';
 import { summarize as writeSummary } from '../llm/summary.ts';
 import type { GenSettings } from '../llm/summary.ts';
@@ -58,7 +58,7 @@ import { REGIONS, TRANSCRIPT_CALLOUT, parseCompanionProperties, readRegion, rend
 import { companionBasename, companionPath, dailyLinkLine } from '../notes/sanitize.ts';
 import { disarmCode, sanitizeLlmOutput } from '../notes/sanitizeLlmOutput.ts';
 import { transcriptPlain, turnLine } from '../notes/transcriptMd.ts';
-import { WriteQueue } from '../notes/writeQueue.ts';
+import { GIVE_UP_MS, WriteQueue } from '../notes/writeQueue.ts';
 import { createEmbedder } from '../rag/embed.ts';
 import { nearBest, retrievalFloors, type RetrievalFloors } from '../rag/relevance.ts';
 import { TranscriptIndex } from '../rag/transcriptIndex.ts';
@@ -82,6 +82,9 @@ const VAULT_CHANGE_DEBOUNCE_MS = 2000;
 /* Templater rewrites every new note about 300 ms after it is created. */
 const NEW_COMPANION_HOLD_MS = 1000;
 const FLUSH_CAP_MS = 3000;
+/* End waits for the queue to write its last batch or to give it up: given up once the meeting
+   is left, the lines it carried are in no memory any more, and nothing could send them again. */
+const END_FLUSH_CAP_MS = GIVE_UP_MS + 1000;
 /* Embedding the last chunk must not keep the Stop button spinning when Ollama is slow. */
 const INDEX_FLUSH_CAP_MS = 5000;
 /* An edited note is saved two seconds after the last keystroke: looked at once it has settled. */
@@ -97,7 +100,6 @@ const GLOSSARY_SIZE = 60;
 const ENHANCE_EXCERPTS = 3;
 const QA_VAULT_CHUNKS = 8;
 const QA_TRANSCRIPT_CHUNKS = 4;
-const QA_SOURCE_TOKENS = 6000;
 const QA_LINKED_CHARS = 2500;
 const QA_TAIL_SECONDS = 900;
 const QA_TAIL_TOKENS = 3000;
@@ -132,7 +134,11 @@ const NO_LINK_LINE = 'no line is added to the daily note';
 /* The words of the sidebar's banner for a source that gives no reason (STT_FAILED_FALLBACK and
    STT_NOT_INSTALLED_FALLBACK in ui/components/banner.ts). */
 const TRANSCRIPT_LOST = 'Transcription stopped. The recording continues without a transcript.';
-const TRANSCRIPT_NOT_INSTALLED = 'Transcription is not installed on this Mac.';
+const TRANSCRIPT_NOT_INSTALLED = 'Transcription is not installed on this computer.';
+/* The worker's queue is unbounded by design (protocol/segments.md): on a busy computer the
+   transcript falls behind the room and catches up later. Said once per recording from this far
+   behind, so that the user knows why the lines lag and what would shed the backlog. */
+const BACKLOG_WARN_MS = 30_000;
 const CLOSING = 'Magical Hamster is restarting: that was not done. Try again in a moment.';
 const LINK_NOT_ADDED = 'The link to the companion note could not be added to your daily note.';
 /* A key no section has: asks the parser which section holds a link, whatever its heading says today. */
@@ -451,6 +457,8 @@ class MeetingSession implements HamsterSession {
   private readonly writeQueue: WriteQueue;
   private readonly enhance: EnhanceEngine;
   private transcriptIndex: TranscriptIndex;
+  /** The embedding space the transcript index holds vectors of: `embedIdNow()` when it was made. */
+  private embedId: string;
   /** Chunks of this meeting's transcript that can be searched. */
   private searchable = 0;
   /** Excerpts found for a shorthand line, while that count stands. */
@@ -515,6 +523,8 @@ class MeetingSession implements HamsterSession {
   private readonly warned = new Set<string>();
   /** The user was told that this recording has lost its transcript. */
   private transcriptLossSaid = false;
+  /** The user was told, in this recording, that transcription has fallen far behind. */
+  private backlogWarned = false;
   private ticker: unknown = null;
   private ticking = false;
   private recordingSince = 0;
@@ -626,6 +636,8 @@ class MeetingSession implements HamsterSession {
   private ending = 0;
   private missingNoticed = false;
   private writeErrorNoticed = false;
+  /** Notes a batch was given up for once their meeting had been left: each is named once. */
+  private readonly lostSaid = new Set<string>();
   /** The queue gave a batch up: the regions it carried are not in the note, and go again with the next try. */
   private resend = false;
   /** That next try, when nothing else brings one: armed when a batch is given up, one at a time. */
@@ -688,6 +700,7 @@ class MeetingSession implements HamsterSession {
     });
     this.enhance = new EnhanceEngine(this.enhanceDeps());
     this.enhance.setLive(this.state.liveEnhance);
+    this.embedId = this.embedIdNow();
     this.transcriptIndex = this.newTranscriptIndex();
     this.controller = this.buildController();
   }
@@ -822,10 +835,10 @@ class MeetingSession implements HamsterSession {
     this.patch({ daily });
   }
 
-  private notice(message: string): void {
+  private notice(message: string, ms?: number): void {
     if (this.disposed) return;
     try {
-      this.deps.notes.notice(message);
+      this.deps.notes.notice(message, ms);
     } catch {
       // A host that cannot show a notice must not break the action that wanted one.
     }
@@ -1102,6 +1115,12 @@ class MeetingSession implements HamsterSession {
       }
       // The indexed folders may have been typed in the settings tab, or have arrived by sync.
       if (this.vaultIndex) this.onIndexStatus(this.vaultIndex.status());
+      // Vectors of another embedding model or dimension cannot be searched with the new one's.
+      const embedId = this.embedIdNow();
+      if (embedId !== this.embedId) {
+        this.embedId = embedId;
+        this.reindexTranscript();
+      }
       void this.refreshOllama();
       // The soft-marker pattern or the companion prefix may have changed.
       this.derive();
@@ -1495,8 +1514,10 @@ class MeetingSession implements HamsterSession {
       }
     }
     this.discardAsked = { id, at: now };
+    // On screen for as long as the same request still answers it: Obsidian's own five seconds are shorter.
     this.notice(
       `This meeting is not saved yet. Create the companion note to keep it, or ${again} again to discard it.`,
+      DISCARD_MAX_MS,
     );
     return false;
   }
@@ -1820,7 +1841,7 @@ class MeetingSession implements HamsterSession {
       linkLine: '',
       intoNote: true,
       where:
-        'Below your text: four sections (Enhanced notes, AI summary, Q&A insights, Transcript). In the frontmatter: type, date, tags and hamster_source.',
+        "Below your text: four sections (Enhanced notes, AI summary, Q&A insights, Transcript). In the properties: type, tags and hamster_source are added, and date is set to the meeting's day.",
     });
     if (!accepted || this.state.meeting?.key !== meeting.key) return;
     this.deps.setLocal({ firstWriteConfirmed: true });
@@ -1906,7 +1927,9 @@ class MeetingSession implements HamsterSession {
       if (!this.mayLeave('end', 'press End')) return;
       // One more try for what a failed write dropped.
       this.sendDropped();
-      await this.writeQueue.flush();
+      // Long enough for a write that keeps throwing to be given up while the meeting is still
+      // here to hear it (onWriteError): after `leaveMeeting` its lines would be nowhere.
+      await this.writeQueue.flush(undefined, END_FLUSH_CAP_MS);
       if (this.closed || this.state.meeting?.key !== meeting.key || this.state.recording !== 'idle') return;
       this.leaveMeeting();
       this.patch({ ...this.clearedMeetingState(), meeting: null });
@@ -1950,6 +1973,9 @@ class MeetingSession implements HamsterSession {
     this.priorTranscript = false;
     this.separators = new Map();
     this.lastFinal.clear();
+    // What a source was still hearing belongs to this meeting or to none: not to the next one.
+    this.openPartial = null;
+    this.backlogWarned = false;
     this.savedTurns = 0;
     this.takenTurns = 0;
     this.writtenTurns = 0;
@@ -2772,7 +2798,18 @@ class MeetingSession implements HamsterSession {
 
   /** The queue gave a batch up after trying it three times. */
   private onWriteError(path: string, error: unknown): void {
-    if (this.disposed || this.state.meeting?.companionPath !== path) return;
+    if (this.disposed) return;
+    if (this.state.meeting?.companionPath !== path) {
+      /* The meeting was left while the queue was still trying: End waits for the third try, a
+         change of meeting cannot. The batch was in the queue's memory only, and what it carried
+         (the last lines, the latest notes) is now in none; the user is at least told which note
+         to look at. Once per note: the queue holds one batch per path, and nothing sends another
+         for a meeting that is not the current one. */
+      if (this.lostSaid.has(path)) return;
+      this.lostSaid.add(path);
+      this.notice(`The last lines could not be saved to ${basenameOf(path)}.`);
+      return;
+    }
     const lost = this.failedBatch;
     this.failedBatch = null;
     if (lost && lost.epoch === this.companionEpoch) {
@@ -3143,8 +3180,18 @@ class MeetingSession implements HamsterSession {
         // The recording is over either way.
       }
     }
+    /* A worker killed at the end of its grace sends no final for the sentence it was hearing:
+       up to twenty seconds, on screen as a partial. It is kept as said, in this meeting. Left
+       open, it would surface in the next one, as a final with this meeting's times. */
+    const open = this.openPartial;
+    if (open) {
+      this.openPartial = null;
+      this.onSttEvent({ ...open, isFinal: true });
+    }
     // Only now: the worker's last finals arrive during the stop.
     this.detachSource();
+    // The next recording starts with an empty queue: a backlog there is news again.
+    this.backlogWarned = false;
     await this.capped(this.transcriptIndex.flush(), INDEX_FLUSH_CAP_MS);
     if (this.closed) return;
 
@@ -3212,6 +3259,9 @@ class MeetingSession implements HamsterSession {
     }
     this.unsubscribe = [];
     this.source = null;
+    // Nothing more will end it: a partial that outlived its source would be promoted into a
+    // final of the next recording, by a worker that dies before its first word.
+    this.openPartial = null;
   }
 
   private stopTicker(): void {
@@ -3271,6 +3321,15 @@ class MeetingSession implements HamsterSession {
       if (message !== '' && !this.warned.has(event.code)) {
         this.warned.add(event.code);
         this.notice(message);
+      }
+      return;
+    }
+    if (event.type === 'stats') {
+      if (!this.backlogWarned && event.backlogMs >= BACKLOG_WARN_MS) {
+        this.backlogWarned = true;
+        this.notice(
+          `Transcription is running ${Math.round(event.backlogMs / 1000)} s behind: the computer is busy. It catches up by itself; stopping and starting the recording again drops the backlog.`,
+        );
       }
       return;
     }
@@ -3355,6 +3414,25 @@ class MeetingSession implements HamsterSession {
       },
     });
     return index;
+  }
+
+  /** The embedding space of the settings: the same string the vault index is given as its model id. */
+  private embedIdNow(): string {
+    const s = this.deps.settings();
+    return `${s.embedModel}@${s.embedDimensions}`;
+  }
+
+  /**
+   * The embedding space changed under the meeting: the vectors of its transcript would be
+   * compared with queries of another model, or be refused by the store for their length. A fresh
+   * index is fed every turn again; the excerpts found so far were found in the old space.
+   */
+  private reindexTranscript(): void {
+    this.transcriptIndex.reset();
+    this.transcriptIndex = this.newTranscriptIndex();
+    this.searchable = 0;
+    this.excerpts.clear();
+    for (const turn of this.state.turns) this.transcriptIndex.addTurn(turn);
   }
 
   /* ─────────────────────────────── Enhance ────────────────────────────── */
@@ -3621,9 +3699,16 @@ class MeetingSession implements HamsterSession {
         this.transcriptExcerpts(text, meeting, run.abort.signal),
       ]);
       if (!live()) return;
-      run.sources = buildSources({ linked, vault, transcript, maxTokens: QA_SOURCE_TOKENS });
-
       const now = this.state;
+      // Outside a meeting the question is about the vault, not about the section under the cursor.
+      const shorthand = meeting ? now.shorthand.map((item) => item.text) : [];
+      run.sources = buildSources({
+        linked,
+        vault,
+        transcript,
+        maxTokens: qaSourceBudget(this.genSettings().numCtx, text, shorthand.join('\n')),
+      });
+
       const answered = await answerQuestion(
         {
           llm: this.deps.llm,
@@ -3635,8 +3720,7 @@ class MeetingSession implements HamsterSession {
           question: text,
           title: meeting?.title ?? '',
           date: meeting?.date ?? now.daily.date,
-          // Outside a meeting the question is about the vault, not about the section under the cursor.
-          shorthand: meeting ? now.shorthand.map((item) => item.text) : [],
+          shorthand,
           transcriptTail: meeting ? this.transcriptTail() : '',
           sources: run.sources,
         },
@@ -3854,10 +3938,12 @@ class MeetingSession implements HamsterSession {
       now.total === status.total &&
       now.error === status.error &&
       (now.foldersPending ?? false) === pending &&
+      (now.modelPending ?? false) === (status.modelPending ?? false) &&
       sameList(now.folders, folders)
     ) {
       return;
     }
+    // `modelPending` comes through as the index reports it: set when true, absent otherwise.
     const next: VaultIndexStatus = { ...status, folders: sameList(now.folders, folders) ? now.folders : folders };
     if (pending) next.foldersPending = true;
     this.patch({ index: next });

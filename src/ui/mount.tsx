@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.tsx';
+import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { HamsterProvider, type AppProps } from './context.tsx';
 import { syncTheme } from './theme.ts';
 import '../styles/styles.css';
@@ -18,11 +19,19 @@ export function mountHamster(container: HTMLElement, props: AppProps): () => voi
   mounted.add(container);
   syncTheme(container);
 
-  const root = createRoot(container);
+  /* An error no boundary catches makes React unmount the root, and the leaf stays blank until
+     it is closed and opened again. The boundary around the app shows the error and offers to
+     draw it again instead; what still gets past it (the provider, the fallback itself) is at
+     least logged under the plugin's tag, where React would log it bare. */
+  const root = createRoot(container, {
+    onUncaughtError: (error, info) => console.error('[magical-hamster]', error, info.componentStack),
+  });
   root.render(
     <StrictMode>
       <HamsterProvider value={props}>
-        <App />
+        <ErrorBoundary>
+          <App />
+        </ErrorBoundary>
       </HamsterProvider>
     </StrictMode>,
   );

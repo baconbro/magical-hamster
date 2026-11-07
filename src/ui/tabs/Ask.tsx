@@ -367,9 +367,20 @@ function IndexBlock() {
       >
         <div className="flex min-h-0 flex-col gap-2 pt-1 pb-1.5">
           <div aria-live="polite" className="flex shrink-0 flex-col gap-1">
-            <p className={clsx('text-xs break-words', index.status === 'error' ? 'text-danger' : 'text-ink')}>
-              {indexSummary(index)}
-            </p>
+            {/* The counts of an index the settings have outgrown would say "ready" about notes
+                that are no longer answered from. */}
+            {index.modelPending === true ? (
+              <p className="flex items-start gap-1.5 text-xs text-ink">
+                <TriangleAlert className="mt-px size-3.5 shrink-0 text-warn" aria-hidden="true" />
+                <span className="min-w-0 break-words">
+                  Built with another embedding model. Rebuild the index to search with the current one.
+                </span>
+              </p>
+            ) : (
+              <p className={clsx('text-xs break-words', index.status === 'error' ? 'text-danger' : 'text-ink')}>
+                {indexSummary(index)}
+              </p>
+            )}
             {/* A note that was skipped, an index that could not be saved: the build still ends
                 "ready", and this line is the only place that says it. */}
             {problem !== null && (

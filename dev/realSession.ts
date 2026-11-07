@@ -1,6 +1,7 @@
 import { createCallLog, withCallLog } from '../src/llm/callLog.ts';
 import { confirmWriteText } from '../src/ui/components/format.ts';
 import { createOllamaClient } from '../src/llm/ollama.ts';
+import { SPEECH_SETUP_COMMAND } from '../src/project.ts';
 import { createSession } from '../src/session/meetingSession.ts';
 import { DEFAULT_LOCAL, DEFAULT_SETTINGS } from '../src/settings.ts';
 import type {
@@ -176,8 +177,8 @@ class HarnessNotes extends FakeNotesHost {
     this.onOpen(path);
   }
 
-  override notice(message: string): void {
-    super.notice(message);
+  override notice(message: string, ms?: number): void {
+    super.notice(message, ms);
     this.onNotice(message);
   }
 }
@@ -311,7 +312,7 @@ export async function createRealSession(opts: {
   return {
     store: session.store,
     controller: session.controller,
-    host: { renderMarkdown: renderMiniMarkdown, callLog },
+    host: { renderMarkdown: renderMiniMarkdown, callLog, speechSetupCommand: SPEECH_SETUP_COMMAND },
     callLog,
     session,
     notes,

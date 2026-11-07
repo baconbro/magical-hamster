@@ -1,4 +1,4 @@
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { FileSystemAdapter } from 'obsidian';
 import type { App } from 'obsidian';
@@ -75,6 +75,18 @@ export function createVaultIndexIO(app: App, runtimeDir: () => string): VaultInd
 
     async load() {
       const dir = indexDir();
+      /* A save cut short (Obsidian killed, the plugin unloaded with a save under way) leaves the
+         temporary file it was writing, and writeFileAtomic removes it only when the write itself
+         fails. Swept here, before the index is read: nothing else ever looks at the folder.
+         Another window of the same vault saving at this very moment would lose that save and
+         make it again, since its index stays dirty. */
+      try {
+        for (const name of await readdir(dir)) {
+          if (name.endsWith('.tmp')) await rm(join(dir, name), { force: true }).catch(() => undefined);
+        }
+      } catch {
+        // No folder yet: no index either.
+      }
       try {
         const [index, vectors] = await Promise.all([
           readFile(join(dir, INDEX_FILE), 'utf8'),
@@ -94,9 +106,9 @@ export function createVaultIndexIO(app: App, runtimeDir: () => string): VaultInd
       const dir = indexDir();
       const run = saving.then(async () => {
         await mkdir(dir, { recursive: true });
-        /* Two renames cannot be one step. Vectors go first: an index that
-           describes another number of vectors than the file holds is detected
-           on load and rebuilt. */
+        /* Two renames cannot be one step. Vectors go first, and both files
+           carry the id of their save: a quit or a crash between the two leaves
+           a pair of two saves, which the index refuses on load and rebuilds. */
         await writeFileAtomic(join(dir, VECTORS_FILE), vectors);
         await writeFileAtomic(join(dir, INDEX_FILE), index);
       });
