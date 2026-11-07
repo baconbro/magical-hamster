@@ -5,6 +5,7 @@ import {
   copyFileSync,
   createReadStream,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -15,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, delimiter, dirname, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /* Installs the speech runtime outside the vault: the sherpa-onnx-node addon,
@@ -29,12 +30,20 @@ import { fileURLToPath } from 'node:url';
  *   pnpm setup:stt
  *   pnpm setup:stt --dry-run
  *   pnpm setup:stt --chunk-ms 1120 --runtime /some/dir --node /path/to/node
- *   pnpm setup:stt --model-url file:///Users/me/Downloads/<model>.tar.bz2
+ *   pnpm setup:stt --model-url file:///Users/me/Downloads/<model>.tar.bz2 --sha256 <hex>
  *
  * Every step is skipped when its result is already there, so the script can
  * be run again after a failure or an update. --dry-run touches neither the
  * disk nor the network. --model-url takes the model archive from that URL
  * (a mirror, or a file already downloaded) instead of asking GitHub.
+ *
+ * The download is always checked against a SHA-256: the one GitHub publishes
+ * for the asset, or, when GitHub cannot be asked, the one pinned below. An
+ * archive nothing vouches for needs --sha256 <hex> from the release page, or
+ * --no-verify, which says so in the output.
+ *
+ * The helpers are exported for the tests; the setup itself runs only when this
+ * file is the script Node was started with.
  */
 
 // The worker's files by name, in the release build (scripts/build-setup.mjs); null in the repository.
@@ -42,14 +51,19 @@ const EMBEDDED_WORKER = null;
 const COMMAND = EMBEDDED_WORKER ? 'node setup-speech.mjs' : 'pnpm setup:stt';
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_RUNTIME = join(homedir(), 'Library', 'Application Support', 'magical-hamster');
+// What the runtime's own package.json is named: another name there is someone else's project.
+const RUNTIME_NAME = 'magical-hamster-runtime';
 const SHERPA_PACKAGE = 'sherpa-onnx-node';
-const SHERPA_MIN = [1, 13, 8];
-const SHERPA_SPEC = `${SHERPA_PACKAGE}@^${SHERPA_MIN.join('.')}`;
+/* Exactly this version: the worker is written against its API, and a floating
+   range would hand a new major to a user who merely runs the setup again. */
+const SHERPA_VERSION = '1.13.8';
+const SHERPA_MIN = SHERPA_VERSION.split('.').map(Number);
+const SHERPA_SPEC = `${SHERPA_PACKAGE}@${SHERPA_VERSION}`;
 const ADDON_PACKAGE = 'sherpa-onnx-darwin-arm64';
 const RELEASE_API = 'https://api.github.com/repos/k2-fsa/sherpa-onnx/releases/tags/asr-models';
 const DOWNLOAD_BASE = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models';
 const MODEL_PREFIX = 'sherpa-onnx-nemotron-3.5-asr-streaming-0.6b';
-// The date in the asset names at the time of writing; only used when GitHub's API cannot be asked.
+// The date in the asset names at the time of writing; the pinned checksums below are those builds'.
 const MODEL_DATE = '2026-06-11';
 const CHUNKS = [80, 160, 320, 560, 1120];
 const FALLBACK_CHUNK = 1120;
@@ -61,9 +75,34 @@ const MODEL_FILES = [
 ];
 const STEPS = 7;
 
+function assetName(chunkMs, date = MODEL_DATE) {
+  return `${MODEL_PREFIX}-${chunkMs}ms-int8-${date}.tar.bz2`;
+}
+
+/* The SHA-256 GitHub published for each build of MODEL_DATE (the table in
+   protocol/segments.md), so that a download is checked even when the API
+   cannot be asked. The names are built, not typed, so they cannot drift from
+   the ones the script asks for. */
+const KNOWN_SHA256 = Object.fromEntries(
+  [
+    [80, 'fb170128c496db33a1fb9f5f9f823257f42f911224ee218bb429f3c2eaf90a8d'],
+    [160, 'a81909a1780d84cff16d73c15e13e67d9d81d8839faf14870d507d8499f7a61a'],
+    [320, '5f311142337a5c161e92d49f7a3009d8607d3836f39d610bff5307c74d1d2c53'],
+    [560, 'c6bf5e0df765f9d5b43bc9e0536d4b4b3e7d40bdf5ecf13e45f134c51c05ae3a'],
+    [1120, 'adbdd5e9fef87300c37cebfcfc4f1ebe56845c860c8a760af0a1dd65ce9beed3'],
+  ].map(([chunkMs, sha256]) => [assetName(chunkMs), sha256]),
+);
+
+/** What `fail` throws: a message for the user, then exit code 1. */
+class SetupStop extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'SetupStop';
+  }
+}
+
 function fail(message) {
-  console.error(`\nThe speech setup stopped: ${message}`);
-  process.exit(1);
+  throw new SetupStop(message);
 }
 
 function archiveName(url) {
@@ -75,7 +114,16 @@ function archiveName(url) {
 }
 
 function parseArgs(argv) {
-  const opts = { dryRun: false, chunkMs: 560, chunkGiven: false, runtime: DEFAULT_RUNTIME, node: '', modelUrl: '' };
+  const opts = {
+    dryRun: false,
+    chunkMs: 560,
+    chunkGiven: false,
+    runtime: DEFAULT_RUNTIME,
+    node: '',
+    modelUrl: '',
+    sha256: '',
+    noVerify: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const value = () => {
@@ -89,14 +137,19 @@ function parseArgs(argv) {
     } else if (arg === '--runtime') opts.runtime = resolve(value());
     else if (arg === '--node') opts.node = resolve(value());
     else if (arg === '--model-url') opts.modelUrl = value();
+    else if (arg === '--sha256') opts.sha256 = value().toLowerCase();
+    else if (arg === '--no-verify') opts.noVerify = true;
     else if (arg === '--help' || arg === '-h') {
       console.log(
-        `Usage: ${COMMAND} [--dry-run] [--chunk-ms 560|1120|320] [--runtime <dir>] [--node <path>] [--model-url <url>]`,
+        `Usage: ${COMMAND} [--dry-run] [--chunk-ms 560|1120|320] [--runtime <dir>] [--node <path>] ` +
+          '[--model-url <url>] [--sha256 <hex>] [--no-verify]',
       );
       process.exit(0);
     } else fail(`Unknown argument ${arg}`);
   }
   if (!CHUNKS.includes(opts.chunkMs)) fail(`--chunk-ms must be one of ${CHUNKS.join(', ')}`);
+  if (opts.sha256 && !/^[0-9a-f]{64}$/.test(opts.sha256)) fail('--sha256 must be 64 hex characters');
+  if (opts.sha256 && opts.noVerify) fail('--sha256 and --no-verify contradict each other');
   if (opts.modelUrl) {
     // The archive's own name says which build it is.
     const name = archiveName(opts.modelUrl);
@@ -117,8 +170,6 @@ function parseArgs(argv) {
   return opts;
 }
 
-const opts = parseArgs(process.argv.slice(2));
-const { dryRun, runtime } = opts;
 let stepNumber = 0;
 
 function step(title) {
@@ -142,9 +193,10 @@ function readJson(file) {
   }
 }
 
+// lstat, not stat: a link where a model file should be is not a model file.
 function isFile(file) {
   try {
-    return statSync(file).isFile();
+    return lstatSync(file).isFile();
   } catch {
     return false;
   }
@@ -155,6 +207,21 @@ function isDir(dir) {
     return statSync(dir).isDirectory();
   } catch {
     return false;
+  }
+}
+
+/**
+ * Writes the whole file or nothing: a temporary file beside it, renamed into
+ * place, so a run killed mid-write leaves the previous runtime.json readable.
+ */
+function writeFileAtomicSync(file, text) {
+  const temp = join(dirname(file), `.${basename(file)}.${process.pid}.tmp`);
+  try {
+    writeFileSync(temp, text);
+    renameSync(temp, file);
+  } catch (err) {
+    rmSync(temp, { force: true });
+    throw err;
   }
 }
 
@@ -209,10 +276,28 @@ function versionAtLeast(version, min) {
   return true;
 }
 
-function installedSherpa() {
+/** An installed library the worker can use: SHERPA_VERSION or a later release of the same major. */
+function sherpaUsable(version) {
+  return versionAtLeast(version, SHERPA_MIN) && parseInt(String(version), 10) === SHERPA_MIN[0];
+}
+
+function installedSherpa(runtime) {
   const pkg = readJson(join(runtime, 'node_modules', SHERPA_PACKAGE, 'package.json'));
   const addon = isFile(join(runtime, 'node_modules', ADDON_PACKAGE, 'sherpa-onnx.node'));
   return { version: pkg?.version ?? null, addon };
+}
+
+/**
+ * The name in a package.json that is not the runtime's own, or null. npm
+ * install would otherwise add the speech library to whatever project lives
+ * in the folder --runtime named.
+ */
+function otherProjectIn(runtime) {
+  const file = join(runtime, 'package.json');
+  if (!existsSync(file)) return null;
+  const name = readJson(file)?.name;
+  if (name === RUNTIME_NAME) return null;
+  return typeof name === 'string' && name ? name : '(unnamed)';
 }
 
 function modelDirPattern(chunkMs) {
@@ -256,6 +341,11 @@ async function listAssets() {
   return all;
 }
 
+/* An asset is { name, url, size, sha256, source, chunkMs }. `source` says who
+   vouches for `sha256`: 'GitHub' (the release API's digest), 'the script' (the
+   pin above), '--sha256' (the user), or null when there is none. */
+
+/** The newest build of that chunk size in the release, with GitHub's digest or, failing that, the pin. */
 function pickAsset(assets, chunkMs) {
   const dir = modelDirPattern(chunkMs);
   const matches = assets
@@ -264,21 +354,51 @@ function pickAsset(assets, chunkMs) {
   const asset = matches[matches.length - 1];
   if (!asset) return null;
   const digest = typeof asset.digest === 'string' && asset.digest.startsWith('sha256:') ? asset.digest.slice(7) : null;
-  return { name: asset.name, url: asset.browser_download_url, size: asset.size ?? null, sha256: digest, chunkMs };
+  const pinned = KNOWN_SHA256[asset.name] ?? null;
+  return {
+    name: asset.name,
+    url: asset.browser_download_url,
+    size: asset.size ?? null,
+    sha256: digest ?? pinned,
+    source: digest ? 'GitHub' : pinned ? 'the script' : null,
+    chunkMs,
+  };
 }
 
+/** The build of MODEL_DATE by its known name, for when the release API cannot be asked. */
 function patternAsset(chunkMs) {
-  const name = `${MODEL_PREFIX}-${chunkMs}ms-int8-${MODEL_DATE}.tar.bz2`;
-  return { name, url: `${DOWNLOAD_BASE}/${name}`, size: null, sha256: null, chunkMs };
+  const name = assetName(chunkMs);
+  return { name, url: `${DOWNLOAD_BASE}/${name}`, size: null, sha256: KNOWN_SHA256[name] ?? null, source: 'the script', chunkMs };
 }
 
-async function resolveAsset(chunkMs) {
-  if (opts.modelUrl) {
-    return { name: archiveName(opts.modelUrl), url: opts.modelUrl, size: null, sha256: null, chunkMs };
-  }
+function urlAsset(opts) {
+  return { name: archiveName(opts.modelUrl), url: opts.modelUrl, size: null, sha256: null, source: null, chunkMs: opts.chunkMs };
+}
+
+/** The checksum the download is compared against: --sha256, then the asset's own, then the pin by name. */
+function checksumFor(asset, opts) {
+  if (opts.sha256) return { sha256: opts.sha256, source: '--sha256' };
+  if (asset.sha256) return { sha256: asset.sha256, source: asset.source ?? 'GitHub' };
+  const pinned = KNOWN_SHA256[asset.name];
+  if (pinned) return { sha256: pinned, source: 'the script' };
+  return null;
+}
+
+function sourceText(source) {
+  if (source === 'GitHub') return 'the checksum GitHub publishes';
+  if (source === 'the script') return 'the checksum pinned in the script';
+  return source;
+}
+
+function noChecksum(name) {
+  return `no checksum is known for ${name}. Pass --sha256 <hex> (from the release page) or --no-verify.`;
+}
+
+async function resolveAsset(chunkMs, opts, list = listAssets) {
+  if (opts.modelUrl) return urlAsset(opts);
   let assets;
   try {
-    assets = await listAssets();
+    assets = await list();
   } catch (err) {
     say(`GitHub's release API did not answer (${err.message}).`);
     say('Falling back to the file name the model had when this script was written.');
@@ -312,7 +432,71 @@ function megabytes(bytes) {
   return `${Math.round(bytes / (1024 * 1024))} MB`;
 }
 
-async function downloadModel(modelsDir, asset) {
+function isPlainHttp(url) {
+  return url.startsWith('http:');
+}
+
+/**
+ * curl's arguments for the download: HTTPS or a local file, redirects to
+ * HTTPS only (GitHub's downloads redirect), plain HTTP only when the user
+ * named such an address, and a transfer that stalls or fails is given up and
+ * retried rather than left hanging.
+ */
+function curlArgs(url, part) {
+  const protos = isPlainHttp(url) ? '=https,file,http' : '=https,file';
+  return [
+    '-L',
+    '--fail',
+    '--proto',
+    protos,
+    '--proto-redir',
+    '=https',
+    '--connect-timeout',
+    '30',
+    '--retry',
+    '3',
+    '--retry-delay',
+    '2',
+    '--speed-limit',
+    '1024',
+    '--speed-time',
+    '60',
+    '--progress-bar',
+    '-o',
+    part,
+    url,
+  ];
+}
+
+// The system's own tar on a Mac, not whatever a package manager put first on the PATH.
+function tarCommand() {
+  return process.platform === 'darwin' && existsSync('/usr/bin/tar') ? '/usr/bin/tar' : 'tar';
+}
+
+/**
+ * The first entry under `dir` that is neither a directory nor a regular file,
+ * relative to `dir`, or null. A model holds nothing else; a link in an archive
+ * could point anywhere on the disk.
+ */
+function findSpecialEntry(root, dir = root) {
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    const info = lstatSync(path);
+    if (info.isDirectory()) {
+      const inside = findSpecialEntry(root, path);
+      if (inside) return inside;
+    } else if (!info.isFile()) {
+      return relative(root, path);
+    }
+  }
+  return null;
+}
+
+async function downloadModel(modelsDir, asset, opts) {
+  // Known before a byte is fetched: a download nothing vouches for is not started.
+  const expected = opts.noVerify ? null : checksumFor(asset, opts);
+  if (!opts.noVerify && !expected) fail(noChecksum(asset.name));
+
   const part = join(modelsDir, `.download-${asset.name}.part`);
   const staging = join(modelsDir, `.extract-${asset.name}`);
   const dirName = asset.name.slice(0, -'.tar.bz2'.length);
@@ -325,7 +509,8 @@ async function downloadModel(modelsDir, asset) {
 
   say(`Downloading ${asset.name}${asset.size ? ` (${megabytes(asset.size)})` : ''}`);
   say(`from ${asset.url}`);
-  const curl = spawnSync('curl', ['-L', '--fail', '--progress-bar', '-o', part, asset.url], { stdio: 'inherit' });
+  if (isPlainHttp(asset.url)) say('Warning: the model address is http://, not encrypted.');
+  const curl = spawnSync('curl', curlArgs(asset.url, part), { stdio: 'inherit' });
   if (curl.status !== 0) {
     rmSync(part, { force: true });
     fail(
@@ -336,17 +521,24 @@ async function downloadModel(modelsDir, asset) {
 
   const sha256 = await sha256Of(part);
   say(`sha256 ${sha256}`);
-  if (asset.sha256 && asset.sha256 !== sha256) {
-    rmSync(part, { force: true });
-    fail(`the download does not match the checksum GitHub publishes (${asset.sha256}). It was deleted; run the script again.`);
+  if (expected) {
+    if (expected.sha256 !== sha256) {
+      rmSync(part, { force: true });
+      fail(
+        `the download does not match ${sourceText(expected.source)}: expected ${expected.sha256}, got ${sha256}. ` +
+          'It was deleted; run the script again.',
+      );
+    }
+    say(`verified against ${sourceText(expected.source)}`);
+  } else {
+    say('NOT verified (--no-verify)');
   }
-  if (asset.sha256) say('The checksum matches the one GitHub publishes.');
 
   say('Extracting');
   mkdirSync(staging, { recursive: true });
   // Extracted aside and moved into place, so an interrupted run never leaves
   // something that looks like a complete model.
-  const tar = spawnSync('tar', ['xjf', part, '-C', staging], { stdio: 'inherit' });
+  const tar = spawnSync(tarCommand(), ['xjf', part, '-C', staging], { stdio: 'inherit' });
   if (tar.status !== 0) {
     rmSync(staging, { recursive: true, force: true });
     fail(`tar could not extract ${part}`);
@@ -356,6 +548,11 @@ async function downloadModel(modelsDir, asset) {
     rmSync(staging, { recursive: true, force: true });
     rmSync(part, { force: true });
   };
+  const special = findSpecialEntry(staging);
+  if (special) {
+    discard();
+    fail(`the archive holds a link or special file: ${special}`);
+  }
   let extracted = join(staging, dirName);
   if (!isDir(extracted)) {
     const dirs = readdirSync(staging).filter((name) => isDir(join(staging, name)));
@@ -375,7 +572,7 @@ async function downloadModel(modelsDir, asset) {
   rmSync(staging, { recursive: true, force: true });
   rmSync(part, { force: true });
   // Kept beside the model so the hash survives a later run that skips the download.
-  writeFileSync(`${target}.sha256`, `${sha256}  ${asset.name}\n`);
+  writeFileAtomicSync(`${target}.sha256`, `${sha256}  ${asset.name}\n`);
   return basename(target);
 }
 
@@ -405,7 +602,7 @@ function pickTestWav(modelDir) {
   return join(dir, wavs[0]);
 }
 
-function runSelfTest(nodePath, modelDir, wav) {
+function runSelfTest(runtime, nodePath, modelDir, wav) {
   const addonDir = join(runtime, 'node_modules', ADDON_PACKAGE);
   // The same command line and environment the plugin uses.
   const run = spawnSync(nodePath, [join(runtime, 'worker.cjs'), '--model', modelDir, '--self-test', wav], {
@@ -461,203 +658,272 @@ function reportSelfTest(result) {
   }
 }
 
-step('Runtime directory');
-say(runtime);
-if (isDir(runtime)) say('already there');
-else if (dryRun) would('create it');
-else mkdirSync(runtime, { recursive: true });
+async function main() {
+  const opts = parseArgs(process.argv.slice(2));
+  const { dryRun, runtime } = opts;
 
-step('Node');
-const nodePath = opts.node || stableNodePath();
-const nodeInfo = inspectNode(nodePath);
-say(`${nodePath}  (v${nodeInfo.version}, ${nodeInfo.platform} ${nodeInfo.arch})`);
-if (nodeInfo.platform !== 'darwin' || nodeInfo.arch !== 'arm64') {
-  fail(`the speech runtime is set up for Apple Silicon Macs (darwin arm64); this Node is ${nodeInfo.platform} ${nodeInfo.arch}.`);
-}
-// 20 reached its end of life in April 2026: a current LTS (22 or 24) is what the worker is run with.
-if (!versionAtLeast(nodeInfo.version, [22])) {
-  fail(`Node 22 or later is needed; this is ${nodeInfo.version}.`);
-}
+  step('Runtime directory');
+  say(runtime);
+  if (isDir(runtime)) say('already there');
+  else if (dryRun) would('create it');
+  else mkdirSync(runtime, { recursive: true });
 
-step(`${SHERPA_PACKAGE} (the speech library)`);
-{
-  const packageJson = join(runtime, 'package.json');
-  if (!existsSync(packageJson)) {
-    const manifest = {
-      name: 'magical-hamster-runtime',
-      private: true,
-      description: `Speech runtime of the Magical Hamster Obsidian plugin. Managed by \`${COMMAND}\`.`,
-    };
-    if (dryRun) would(`write ${packageJson}`);
-    else writeFileSync(packageJson, `${JSON.stringify(manifest, null, 2)}\n`);
+  step('Node');
+  const nodePath = opts.node || stableNodePath();
+  const nodeInfo = inspectNode(nodePath);
+  say(`${nodePath}  (v${nodeInfo.version}, ${nodeInfo.platform} ${nodeInfo.arch})`);
+  if (nodeInfo.platform !== 'darwin' || nodeInfo.arch !== 'arm64') {
+    fail(`the speech runtime is set up for Apple Silicon Macs (darwin arm64); this Node is ${nodeInfo.platform} ${nodeInfo.arch}.`);
   }
-  const have = installedSherpa();
-  if (have.version && have.addon && versionAtLeast(have.version, SHERPA_MIN)) {
-    say(`${SHERPA_PACKAGE} ${have.version} is already installed`);
+  // 20 reached its end of life in April 2026: a current LTS (22 or 24) is what the worker is run with.
+  if (!versionAtLeast(nodeInfo.version, [22])) {
+    fail(`Node 22 or later is needed; this is ${nodeInfo.version}.`);
+  }
+
+  step(`${SHERPA_PACKAGE} (the speech library)`);
+  {
+    const other = otherProjectIn(runtime);
+    if (other) fail(`${runtime} holds another project (${other}). Choose another folder with --runtime.`);
+    const packageJson = join(runtime, 'package.json');
+    if (!existsSync(packageJson)) {
+      const manifest = {
+        name: RUNTIME_NAME,
+        private: true,
+        description: `Speech runtime of the Magical Hamster Obsidian plugin. Managed by \`${COMMAND}\`.`,
+      };
+      if (dryRun) would(`write ${packageJson}`);
+      else writeFileSync(packageJson, `${JSON.stringify(manifest, null, 2)}\n`);
+    }
+    const have = installedSherpa(runtime);
+    if (have.version && have.addon && sherpaUsable(have.version)) {
+      say(`${SHERPA_PACKAGE} ${have.version} is already installed`);
+    } else {
+      const besideNode = join(dirname(nodePath), 'npm');
+      const npm = existsSync(besideNode) ? besideNode : 'npm';
+      // Scripts off: neither package has any, and nothing from the registry gets to run here.
+      const args = ['install', SHERPA_SPEC, '--save-exact', '--ignore-scripts', '--no-audit', '--no-fund'];
+      if (dryRun) {
+        would(`run in ${runtime}: ${npm} ${args.join(' ')}`);
+      } else {
+        say(`${npm} ${args.join(' ')}`);
+        const install = spawnSync(npm, args, {
+          cwd: runtime,
+          stdio: 'inherit',
+          // npm is a script that looks for `node` on the PATH.
+          env: { ...process.env, PATH: `${dirname(nodePath)}${delimiter}${process.env.PATH ?? ''}` },
+        });
+        if (install.status !== 0) fail(`npm install failed (${install.error?.message ?? `exit ${install.status}`})`);
+        const now = installedSherpa(runtime);
+        if (!now.version) fail(`${SHERPA_PACKAGE} is not in ${join(runtime, 'node_modules')} after npm install`);
+        if (!now.addon) {
+          fail(`npm did not install ${ADDON_PACKAGE}, the prebuilt addon for this Mac. Check that npm is not run with --no-optional.`);
+        }
+        say(`installed ${SHERPA_PACKAGE} ${now.version}`);
+      }
+    }
+  }
+
+  step(`Speech model (Nemotron 3.5 ASR Streaming 0.6B, int8, ${opts.chunkMs} ms)`);
+  const modelsDir = join(runtime, 'models');
+  let model = findInstalledModel(modelsDir, opts.chunkMs);
+  if (model) {
+    say(`${model} is already installed`);
+  } else if (dryRun) {
+    // What the real run would fetch; GitHub may name a newer build than the pattern.
+    const asset = opts.modelUrl ? urlAsset(opts) : patternAsset(opts.chunkMs);
+    if (opts.modelUrl) {
+      would(`take the archive from ${opts.modelUrl}`);
+      model = asset.name.slice(0, -'.tar.bz2'.length);
+    } else {
+      would(`ask ${RELEASE_API}`);
+      say(`for the asset ${MODEL_PREFIX}-${opts.chunkMs}ms-int8-<date>.tar.bz2,`);
+      say(`falling back to the ${FALLBACK_CHUNK} ms build, then to ${asset.url}`);
+      model = `${MODEL_PREFIX}-${opts.chunkMs}ms-int8-${MODEL_DATE}`;
+    }
+    // Decided before the download, as in a real run: an archive nothing vouches for is not fetched.
+    let check;
+    if (opts.noVerify) {
+      check = 'NOT check its sha256 (--no-verify)';
+    } else if (opts.modelUrl || opts.sha256) {
+      const expected = checksumFor(asset, opts);
+      if (!expected) fail(noChecksum(asset.name));
+      check = `check its sha256 against ${sourceText(expected.source)}`;
+    } else {
+      check = 'check its sha256 against the checksum GitHub publishes, or the one pinned in the script when GitHub cannot be asked';
+    }
+    if (isPlainHttp(asset.url)) say('Warning: the model address is http://, not encrypted.');
+    would(`download it with curl ${curlArgs(asset.url, '<file>').slice(0, -3).join(' ')} (about 453 MB)`);
+    would(check);
+    would(`extract it with ${tarCommand()} xjf into ${modelsDir}`);
   } else {
-    const besideNode = join(dirname(nodePath), 'npm');
-    const npm = existsSync(besideNode) ? besideNode : 'npm';
-    const args = ['install', SHERPA_SPEC, '--no-audit', '--no-fund'];
+    mkdirSync(modelsDir, { recursive: true });
+    const asset = await resolveAsset(opts.chunkMs, opts);
+    // The 1120 ms fallback may already be installed.
+    model = findInstalledModel(modelsDir, asset.chunkMs);
+    if (model) say(`${model} is already installed`);
+    else model = await downloadModel(modelsDir, asset, opts);
+  }
+  const modelDir = join(modelsDir, model);
+  const chunkMs = Number(/-(\d+)ms-/.exec(model)?.[1] ?? opts.chunkMs);
+
+  step('Worker scripts');
+  if (EMBEDDED_WORKER) {
+    const scripts = Object.keys(EMBEDDED_WORKER).sort();
+    for (const name of scripts) {
+      if (dryRun) would(`write ${join(runtime, name)}`);
+      else writeFileSync(join(runtime, name), EMBEDDED_WORKER[name]);
+    }
+    if (!dryRun) say(`wrote ${scripts.join(', ')}`);
+  } else {
+    const source = join(REPO, 'stt');
+    const scripts = readdirSync(source).filter((name) => name.endsWith('.cjs'));
+    if (scripts.length === 0) fail(`no worker scripts found in ${source}`);
+    for (const name of scripts) {
+      if (dryRun) would(`copy stt/${name} to ${join(runtime, name)}`);
+      else copyFileSync(join(source, name), join(runtime, name));
+    }
+    if (!dryRun) say(`copied ${scripts.join(', ')}`);
+  }
+
+  step('Self-test');
+  let selfTestPassed = false;
+  {
+    const manual = `DYLD_LIBRARY_PATH="${join(runtime, 'node_modules', ADDON_PACKAGE)}" "${nodePath}" "${join(runtime, 'worker.cjs')}" --model "${modelDir}" --self-test <file.wav>`;
     if (dryRun) {
-      would(`run in ${runtime}: ${npm} ${args.join(' ')}`);
+      would("transcribe a WAV from the model's test_wavs/ (French or English first) with:");
+      say(manual);
+      would('load the model on a second of silence instead when it has no test_wavs/');
+      if (!EMBEDDED_WORKER) would('run scripts/fix-sherpa-rpath.mjs and try once more if the library fails to load (exit code 3)');
     } else {
-      say(`${npm} ${args.join(' ')}`);
-      const install = spawnSync(npm, args, {
-        cwd: runtime,
-        stdio: 'inherit',
-        // npm is a script that looks for `node` on the PATH.
-        env: { ...process.env, PATH: `${dirname(nodePath)}${delimiter}${process.env.PATH ?? ''}` },
-      });
-      if (install.status !== 0) fail(`npm install failed (${install.error?.message ?? `exit ${install.status}`})`);
-      const now = installedSherpa();
-      if (!now.version) fail(`${SHERPA_PACKAGE} is not in ${join(runtime, 'node_modules')} after npm install`);
-      if (!now.addon) {
-        fail(`npm did not install ${ADDON_PACKAGE}, the prebuilt addon for this Mac. Check that npm is not run with --no-optional.`);
+      const recording = pickTestWav(modelDir);
+      /* Without a test recording nothing can be transcribed, but the library and
+         the model still have to load before the runtime is recorded as usable:
+         the worker is run on a second of silence instead. */
+      const silence = join(runtime, '.self-test-silence.wav');
+      const wav = recording ?? silence;
+      if (recording) {
+        say(`transcribing ${recording}`);
+      } else {
+        say('The model came without test recordings: loading it on a second of silence instead.');
+        writeFileSync(silence, silentWav());
       }
-      say(`installed ${SHERPA_PACKAGE} ${now.version}`);
-    }
-  }
-}
-
-step(`Speech model (Nemotron 3.5 ASR Streaming 0.6B, int8, ${opts.chunkMs} ms)`);
-const modelsDir = join(runtime, 'models');
-let model = findInstalledModel(modelsDir, opts.chunkMs);
-if (model) {
-  say(`${model} is already installed`);
-} else if (dryRun) {
-  if (opts.modelUrl) {
-    would(`take the archive from ${opts.modelUrl}`);
-    model = archiveName(opts.modelUrl).slice(0, -'.tar.bz2'.length);
-  } else {
-    would(`ask ${RELEASE_API}`);
-    say(`for the asset ${MODEL_PREFIX}-${opts.chunkMs}ms-int8-<date>.tar.bz2,`);
-    say(`falling back to the ${FALLBACK_CHUNK} ms build, then to ${patternAsset(opts.chunkMs).url}`);
-    model = `${MODEL_PREFIX}-${opts.chunkMs}ms-int8-${MODEL_DATE}`;
-  }
-  would('download it with curl -L --fail --progress-bar (about 453 MB), check its sha256');
-  would(`extract it with tar xjf into ${modelsDir}`);
-} else {
-  mkdirSync(modelsDir, { recursive: true });
-  const asset = await resolveAsset(opts.chunkMs);
-  // The 1120 ms fallback may already be installed.
-  model = findInstalledModel(modelsDir, asset.chunkMs);
-  if (model) say(`${model} is already installed`);
-  else model = await downloadModel(modelsDir, asset);
-}
-const modelDir = join(modelsDir, model);
-const chunkMs = Number(/-(\d+)ms-/.exec(model)?.[1] ?? opts.chunkMs);
-
-step('Worker scripts');
-if (EMBEDDED_WORKER) {
-  const scripts = Object.keys(EMBEDDED_WORKER).sort();
-  for (const name of scripts) {
-    if (dryRun) would(`write ${join(runtime, name)}`);
-    else writeFileSync(join(runtime, name), EMBEDDED_WORKER[name]);
-  }
-  if (!dryRun) say(`wrote ${scripts.join(', ')}`);
-} else {
-  const source = join(REPO, 'stt');
-  const scripts = readdirSync(source).filter((name) => name.endsWith('.cjs'));
-  if (scripts.length === 0) fail(`no worker scripts found in ${source}`);
-  for (const name of scripts) {
-    if (dryRun) would(`copy stt/${name} to ${join(runtime, name)}`);
-    else copyFileSync(join(source, name), join(runtime, name));
-  }
-  if (!dryRun) say(`copied ${scripts.join(', ')}`);
-}
-
-step('Self-test');
-let selfTestPassed = false;
-{
-  const manual = `DYLD_LIBRARY_PATH="${join(runtime, 'node_modules', ADDON_PACKAGE)}" "${nodePath}" "${join(runtime, 'worker.cjs')}" --model "${modelDir}" --self-test <file.wav>`;
-  if (dryRun) {
-    would('transcribe a WAV from the model\'s test_wavs/ (French or English first) with:');
-    say(manual);
-    would('load the model on a second of silence instead when it has no test_wavs/');
-    if (!EMBEDDED_WORKER) would('run scripts/fix-sherpa-rpath.mjs and try once more if the library fails to load (exit code 3)');
-  } else {
-    const recording = pickTestWav(modelDir);
-    /* Without a test recording nothing can be transcribed, but the library and
-       the model still have to load before the runtime is recorded as usable:
-       the worker is run on a second of silence instead. */
-    const silence = join(runtime, '.self-test-silence.wav');
-    const wav = recording ?? silence;
-    if (recording) {
-      say(`transcribing ${recording}`);
-    } else {
-      say('The model came without test recordings: loading it on a second of silence instead.');
-      writeFileSync(silence, silentWav());
-    }
-    let result = runSelfTest(nodePath, modelDir, wav);
-    // The repair script is the repository's; the release build has none to run.
-    if (result.status === 3 && !EMBEDDED_WORKER) {
-      say('The speech library did not load. Rewriting its library references and trying once more.');
-      const fix = spawnSync(process.execPath, [join(REPO, 'scripts', 'fix-sherpa-rpath.mjs'), '--runtime', runtime], {
-        stdio: 'inherit',
-      });
-      if (fix.status === 0) result = runSelfTest(nodePath, modelDir, wav);
-    }
-    rmSync(silence, { force: true });
-    reportSelfTest(result);
-    /* The worker ends its run with a summary line once the library and the
-       model have loaded and the audio went through. On silence that is all
-       there is to pass: it exits 1 for having heard nothing. */
-    const loaded = !result.error && result.events.some((event) => event.type === 'selftest');
-    if (recording ? result.status === 0 && !result.error : loaded) {
-      selfTestPassed = true;
-      if (!recording) {
-        say('The speech library and the model loaded. Nothing was transcribed.');
-        say('To test by hand, record a few seconds as 16-bit WAV and run:');
-        say(manual);
+      let result = runSelfTest(runtime, nodePath, modelDir, wav);
+      // The repair script is the repository's; the release build has none to run.
+      if (result.status === 3 && !EMBEDDED_WORKER) {
+        say('The speech library did not load. Rewriting its library references and trying once more.');
+        const fix = spawnSync(process.execPath, [join(REPO, 'scripts', 'fix-sherpa-rpath.mjs'), '--runtime', runtime], {
+          stdio: 'inherit',
+        });
+        if (fix.status === 0) result = runSelfTest(runtime, nodePath, modelDir, wav);
       }
-    } else {
-      if (result.stderr) console.error(result.stderr);
-      const why =
-        result.error?.code === 'ETIMEDOUT'
-          ? 'it did not finish within five minutes'
-          : (result.error?.message ?? `exit code ${result.status}`);
-      fail(
-        recording
-          ? `the self-test failed (${why}). Nothing was recorded in runtime.json. ` +
-              `To repeat it by hand:\n  ${manual.replace('<file.wav>', `"${recording}"`)}`
-          : `the speech library or the model did not load (${why}). Nothing was recorded in runtime.json. ` +
-              `To repeat it by hand, record a few seconds as 16-bit WAV and run:\n  ${manual}`,
-      );
+      rmSync(silence, { force: true });
+      reportSelfTest(result);
+      /* The worker ends its run with a summary line once the library and the
+         model have loaded and the audio went through. On silence that is all
+         there is to pass: it exits 1 for having heard nothing. */
+      const loaded = !result.error && result.events.some((event) => event.type === 'selftest');
+      if (recording ? result.status === 0 && !result.error : loaded) {
+        selfTestPassed = true;
+        if (!recording) {
+          say('The speech library and the model loaded. Nothing was transcribed.');
+          say('To test by hand, record a few seconds as 16-bit WAV and run:');
+          say(manual);
+        }
+      } else {
+        if (result.stderr) console.error(result.stderr);
+        const why =
+          result.error?.code === 'ETIMEDOUT'
+            ? 'it did not finish within five minutes'
+            : (result.error?.message ?? `exit code ${result.status}`);
+        fail(
+          recording
+            ? `the self-test failed (${why}). Nothing was recorded in runtime.json. ` +
+                `To repeat it by hand:\n  ${manual.replace('<file.wav>', `"${recording}"`)}`
+            : `the speech library or the model did not load (${why}). Nothing was recorded in runtime.json. ` +
+                `To repeat it by hand, record a few seconds as 16-bit WAV and run:\n  ${manual}`,
+        );
+      }
     }
   }
-}
 
-step('runtime.json');
-{
-  const file = join(runtime, 'runtime.json');
-  const record = {
-    node: nodePath,
-    runtimeDir: runtime,
-    model,
-    modelDir,
-    chunkMs,
-    sha256: dryRun ? null : recordedSha256(modelsDir, model),
-    sherpaVersion: dryRun ? null : installedSherpa().version,
-    installedAt: new Date().toISOString(),
-  };
-  if (dryRun) {
-    would(`write ${file}:`);
-    for (const line of JSON.stringify(record, null, 2).split('\n')) say(line);
-  } else if (selfTestPassed) {
-    writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
-    say(`wrote ${file}`);
+  step('runtime.json');
+  {
+    const file = join(runtime, 'runtime.json');
+    const record = {
+      node: nodePath,
+      runtimeDir: runtime,
+      model,
+      modelDir,
+      chunkMs,
+      sha256: dryRun ? null : recordedSha256(modelsDir, model),
+      sherpaVersion: dryRun ? null : installedSherpa(runtime).version,
+      installedAt: new Date().toISOString(),
+    };
+    if (dryRun) {
+      would(`write ${file}:`);
+      for (const line of JSON.stringify(record, null, 2).split('\n')) say(line);
+    } else if (selfTestPassed) {
+      writeFileAtomicSync(file, `${JSON.stringify(record, null, 2)}\n`);
+      say(`wrote ${file}`);
+    }
+  }
+
+  console.log(dryRun ? '\nDry run: nothing was changed.' : '\nThe speech runtime is ready.');
+  /* The plugin reads runtime.json: it runs the worker with the Node recorded
+     there, and looks in the default folder by itself. Only a runtime installed
+     somewhere else has to be named in its settings. */
+  const plugin = dryRun ? 'Once installed, the plugin' : 'The plugin';
+  console.log(`${plugin} runs the speech worker with the Node recorded in runtime.json: ${nodePath}`);
+  if (resolve(runtime) === resolve(DEFAULT_RUNTIME)) {
+    console.log('It finds this folder by itself: there is nothing to set in Obsidian.');
+  } else {
+    console.log(`It looks for the runtime in ${DEFAULT_RUNTIME}, not here. In Obsidian, open Settings, Magical Hamster, and set:`);
+    console.log(`  Runtime folder  ${runtime}`);
   }
 }
 
-console.log(dryRun ? '\nDry run: nothing was changed.' : '\nThe speech runtime is ready.');
-/* The plugin reads runtime.json: it runs the worker with the Node recorded
-   there, and looks in the default folder by itself. Only a runtime installed
-   somewhere else has to be named in its settings. */
-const plugin = dryRun ? 'Once installed, the plugin' : 'The plugin';
-console.log(`${plugin} runs the speech worker with the Node recorded in runtime.json: ${nodePath}`);
-if (resolve(runtime) === resolve(DEFAULT_RUNTIME)) {
-  console.log('It finds this folder by itself: there is nothing to set in Obsidian.');
-} else {
-  console.log(`It looks for the runtime in ${DEFAULT_RUNTIME}, not here. In Obsidian, open Settings, Magical Hamster, and set:`);
-  console.log(`  Runtime folder  ${runtime}`);
+export {
+  CHUNKS,
+  FALLBACK_CHUNK,
+  KNOWN_SHA256,
+  MODEL_DATE,
+  MODEL_PREFIX,
+  RUNTIME_NAME,
+  SHERPA_SPEC,
+  SHERPA_VERSION,
+  SetupStop,
+  assetName,
+  checksumFor,
+  curlArgs,
+  findSpecialEntry,
+  otherProjectIn,
+  parseArgs,
+  patternAsset,
+  pickAsset,
+  resolveAsset,
+  sherpaUsable,
+  tarCommand,
+  versionAtLeast,
+  writeFileAtomicSync,
+};
+
+/* Run only as the script Node was started with, so that a test can import the
+   helpers above. Not import.meta.main: that needs Node 22.18, and an older
+   Node should still get as far as the message that says so. */
+const isMain = (() => {
+  try {
+    return process.argv[1] !== undefined && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+
+if (isMain) {
+  try {
+    await main();
+  } catch (err) {
+    if (!(err instanceof SetupStop)) throw err;
+    console.error(`\nThe speech setup stopped: ${err.message}`);
+    process.exit(1);
+  }
 }

@@ -61,7 +61,7 @@ Once, in Terminal (Applications, Utilities), with Node.js 22 or later installed:
 curl -fsSL https://github.com/baconbro/magical-hamster/releases/latest/download/setup-speech.mjs -o setup-speech.mjs && node setup-speech.mjs
 ```
 
-This installs the speech library and downloads the speech model used for transcription (about 475 MB), into `~/Library/Application Support/magical-hamster`, outside your vault. Settings, Magical Hamster, Speech shows the same command, with a button that copies it.
+This installs the speech library (at an exact version, with npm's install scripts off) and downloads the speech model used for transcription (about 475 MB; its SHA-256 is checked against the one GitHub publishes, or the one pinned in the script when GitHub cannot be asked), into `~/Library/Application Support/magical-hamster`, outside your vault. Settings, Magical Hamster, Speech shows the same command, with a button that copies it.
 
 ---
 

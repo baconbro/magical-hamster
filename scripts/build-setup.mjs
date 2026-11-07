@@ -20,5 +20,7 @@ for (const name of readdirSync(join(REPO, 'stt')).filter((file) => file.endsWith
 }
 if (!files['worker.cjs']) throw new Error('stt/worker.cjs is missing');
 
-writeFileSync(OUT, source.replace(MARKER, `const EMBEDDED_WORKER = ${JSON.stringify(files)};`));
+/* A function, not a string: String.replace reads `$&` and `$1` in a replacement
+   string, and the worker's source is free to contain them. */
+writeFileSync(OUT, source.replace(MARKER, () => `const EMBEDDED_WORKER = ${JSON.stringify(files)};`));
 console.log(`${OUT}: the speech setup, with ${Object.keys(files).join(', ')}`);

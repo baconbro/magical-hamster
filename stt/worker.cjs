@@ -708,9 +708,9 @@ function createSherpaEngine({ sherpa, modelDir, files, threads, lang, warn }) {
 }
 
 function loadSherpa() {
-  // Resolved from this file's directory: in the runtime directory the package
-  // sits in ./node_modules whatever the working directory is.
-  return require(require.resolve('sherpa-onnx-node', { paths: [__dirname] }));
+  // The runtime's own copy, by path: a resolver would also search the parent
+  // folders' node_modules, and a half-removed runtime must fail as "not set up".
+  return require(path.join(__dirname, 'node_modules', 'sherpa-onnx-node'));
 }
 
 const round = (value, digits) => {

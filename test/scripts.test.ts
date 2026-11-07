@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -292,7 +293,22 @@ describe(
   { skip: process.platform === 'darwin' && process.arch === 'arm64' ? false : 'setup:stt runs on Apple Silicon only' },
   () => {
     const MODEL = 'sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11';
+    // A build the script has no checksum for: not in its table, and nothing says what it should be.
+    const UNPINNED = 'sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-07-01';
     const MODEL_FILES = ['encoder.int8.onnx', 'decoder.int8.onnx', 'joiner.int8.onnx', 'tokens.txt'];
+    // A library that loads and hears nothing, which is all a second of silence asks of it.
+    const LOADING_LIBRARY = [
+      'class OnlineRecognizer {',
+      '  createStream() { return { acceptWaveform() {}, inputFinished() {}, setOption() {} }; }',
+      '  isReady() { return false; }',
+      '  decode() {}',
+      '  isEndpoint() { return false; }',
+      '  reset() {}',
+      "  getResult() { return { text: '' }; }",
+      '}',
+      "module.exports = { OnlineRecognizer, version: '1.13.8' };",
+      '',
+    ].join('\n');
 
     /**
      * A runtime directory in which the speech library looks installed, so the
@@ -308,12 +324,16 @@ describe(
       return dir;
     }
 
-    /** A .tar.bz2 named `name` holding the given files (path inside the archive -> content). */
-    function archive(name: string, files: Record<string, string>): string {
+    /**
+     * A .tar.bz2 named `name` holding the given files (path inside the archive -> content).
+     * `prepare` may add to the tree before it is packed.
+     */
+    function archive(name: string, files: Record<string, string>, prepare?: (tree: string) => void): string {
       const dir = scratchDir();
       const tree = join(dir, 'tree');
       mkdirSync(tree);
       for (const [path, text] of Object.entries(files)) write(join(tree, path), text);
+      prepare?.(tree);
       const file = join(dir, name);
       const tar = spawnSync('tar', ['cjf', file, '-C', tree, ...readdirSync(tree)], { encoding: 'utf8' });
       assert.equal(tar.status, 0, tar.stderr);
@@ -322,6 +342,8 @@ describe(
 
     const modelFiles = (dir: string): Record<string, string> =>
       Object.fromEntries(MODEL_FILES.map((name) => [`${dir}/${name}`, 'placeholder']));
+
+    const sha256Of = (file: string): string => createHash('sha256').update(readFileSync(file)).digest('hex');
 
     function setup(args: string[]) {
       return spawnSync(process.execPath, [script('setup-stt.mjs'), ...args], { encoding: 'utf8' });
@@ -354,6 +376,106 @@ describe(
       const run = setup(['--dry-run', '--runtime', runtime, '--model-url', `file:///tmp/${MODEL}.tar.bz2`]);
       assert.equal(run.status, 0, run.stderr);
       assert.match(run.stdout, new RegExp(`"model": "${MODEL.replaceAll('.', '\\.')}"`));
+      assert.match(run.stdout, /would check its sha256 against the checksum pinned in the script/);
+    });
+
+    it('does not start a download nothing vouches for, and says what would', () => {
+      const runtime = join(scratchDir(), 'runtime');
+      const url = `file:///tmp/${UNPINNED}.tar.bz2`;
+
+      const unknown = setup(['--dry-run', '--runtime', runtime, '--model-url', url]);
+      assert.equal(unknown.status, 1, unknown.stdout);
+      assert.match(unknown.stderr, new RegExp(`no checksum is known for ${UNPINNED.replaceAll('.', '\\.')}\\.tar\\.bz2\\. Pass --sha256 <hex>`));
+      assert.match(unknown.stderr, /or --no-verify/);
+      assert.doesNotMatch(unknown.stdout, /would download/);
+
+      const vouched = setup(['--dry-run', '--runtime', runtime, '--model-url', url, '--sha256', 'a'.repeat(64)]);
+      assert.equal(vouched.status, 0, vouched.stderr);
+      assert.match(vouched.stdout, /would check its sha256 against --sha256/);
+
+      const waived = setup(['--dry-run', '--runtime', runtime, '--model-url', url, '--no-verify']);
+      assert.equal(waived.status, 0, waived.stderr);
+      assert.match(waived.stdout, /would NOT check its sha256 \(--no-verify\)/);
+      assert.equal(existsSync(runtime), false, 'dry runs');
+    });
+
+    it('deletes a download that does not match --sha256, and records nothing', () => {
+      const runtime = runtimeWith(LOADING_LIBRARY);
+      const models = join(runtime, 'models');
+      const file = archive(`${UNPINNED}.tar.bz2`, modelFiles(UNPINNED));
+      const right = sha256Of(file);
+      const wrong = right.replace(/^./, right.startsWith('0') ? '1' : '0');
+
+      const run = setup(['--runtime', runtime, '--model-url', pathToFileURL(file).href, '--sha256', wrong]);
+
+      assert.equal(run.status, 1, run.stdout);
+      assert.match(run.stderr, /the download does not match --sha256/);
+      assert.ok(run.stderr.includes(`expected ${wrong}, got ${right}`), run.stderr);
+      assert.deepEqual(readdirSync(models), [], 'the .part is deleted and nothing was extracted');
+      assert.equal(existsSync(join(runtime, 'runtime.json')), false);
+    });
+
+    it('takes a download that matches --sha256 and says what it was verified against', () => {
+      const runtime = runtimeWith(LOADING_LIBRARY);
+      const file = archive(`${UNPINNED}.tar.bz2`, modelFiles(UNPINNED));
+      const right = sha256Of(file);
+
+      const run = setup(['--runtime', runtime, '--model-url', pathToFileURL(file).href, '--sha256', right.toUpperCase()]);
+
+      assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
+      assert.match(run.stdout, /verified against --sha256/);
+      assert.doesNotMatch(run.stdout, /NOT verified/);
+      const record = JSON.parse(readFileSync(join(runtime, 'runtime.json'), 'utf8')) as Record<string, unknown>;
+      assert.equal(record.sha256, right);
+      assert.equal(readFileSync(join(runtime, 'models', `${UNPINNED}.sha256`), 'utf8'), `${right}  ${UNPINNED}.tar.bz2\n`);
+    });
+
+    it('checks an archive it knows against its pin, --model-url or not', () => {
+      // The real archive's name, not its content: the pin cannot match.
+      const runtime = runtimeWith(LOADING_LIBRARY);
+      const file = archive(`${MODEL}.tar.bz2`, modelFiles(MODEL));
+
+      const run = setup(['--runtime', runtime, '--model-url', pathToFileURL(file).href]);
+
+      assert.equal(run.status, 1, run.stdout);
+      assert.match(run.stderr, /the download does not match the checksum pinned in the script: expected c6bf5e0d/);
+      assert.deepEqual(readdirSync(join(runtime, 'models')), []);
+    });
+
+    it('refuses an archive that holds a link', () => {
+      const runtime = runtimeWith(LOADING_LIBRARY);
+      const models = join(runtime, 'models');
+      const linked = archive(`${MODEL}.tar.bz2`, modelFiles(MODEL), (tree) => {
+        symlinkSync('/nowhere/outside', join(tree, MODEL, 'README.md'));
+      });
+
+      const run = setup(['--runtime', runtime, '--model-url', pathToFileURL(linked).href, '--no-verify']);
+
+      assert.equal(run.status, 1, run.stdout);
+      assert.match(run.stderr, new RegExp(`the archive holds a link or special file: ${MODEL.replaceAll('.', '\\.')}/README\\.md`));
+      assert.deepEqual(readdirSync(models), [], 'no staging directory and no download');
+      assert.equal(existsSync(join(runtime, 'runtime.json')), false);
+    });
+
+    it('does not install into a folder that holds another project', () => {
+      const runtime = join(scratchDir(), 'runtime');
+      write(join(runtime, 'package.json'), JSON.stringify({ name: 'someone-elses-project', version: '3.0.0' }));
+
+      const run = setup(['--dry-run', '--runtime', runtime]);
+
+      assert.equal(run.status, 1, run.stdout);
+      assert.match(run.stderr, /holds another project \(someone-elses-project\)\. Choose another folder with --runtime\./);
+      assert.doesNotMatch(run.stdout, /npm install/);
+      assert.deepEqual(readdirSync(runtime), ['package.json']);
+    });
+
+    it('installs the library at an exact version with npm scripts off', () => {
+      const runtime = join(scratchDir(), 'runtime');
+      const run = setup(['--dry-run', '--runtime', runtime]);
+      assert.equal(run.status, 0, run.stderr);
+      assert.match(run.stdout, /would run in .*: .*npm install sherpa-onnx-node@1\.13\.8 --save-exact --ignore-scripts --no-audit --no-fund$/m);
+      assert.match(run.stdout, /would download it with curl -L --fail --proto =https,file --proto-redir =https /);
+      assert.match(run.stdout, /would check its sha256 against the checksum GitHub publishes, or the one pinned in the script/);
     });
 
     it('leaves nothing in models/ when the archive is not the model', () => {
@@ -367,7 +489,7 @@ describe(
         [incomplete, /the archive is missing model files/],
         [twoFolders, /the archive did not contain the expected directory/],
       ] as const) {
-        const run = setup(['--runtime', runtime, '--model-url', pathToFileURL(file).href]);
+        const run = setup(['--runtime', runtime, '--model-url', pathToFileURL(file).href, '--no-verify']);
         assert.equal(run.status, 1, run.stdout);
         assert.match(run.stderr, message);
         assert.deepEqual(readdirSync(models), [], 'no staging directory and no partial download');
@@ -384,7 +506,7 @@ describe(
       write(join(models, 'notes.txt'), 'not ours');
       const notTheModel = archive(`${MODEL}.tar.bz2`, { 'one/readme.txt': 'x', 'two/readme.txt': 'y' });
 
-      const run = setup(['--runtime', runtime, '--model-url', pathToFileURL(notTheModel).href]);
+      const run = setup(['--runtime', runtime, '--model-url', pathToFileURL(notTheModel).href, '--no-verify']);
 
       assert.equal(run.status, 1, run.stdout);
       assert.deepEqual(readdirSync(models), ['notes.txt']);
@@ -394,7 +516,7 @@ describe(
       const runtime = runtimeWith();
       const noRecordings = archive(`${MODEL}.tar.bz2`, modelFiles(MODEL));
 
-      const run = setup(['--runtime', runtime, '--model-url', pathToFileURL(noRecordings).href]);
+      const run = setup(['--runtime', runtime, '--model-url', pathToFileURL(noRecordings).href, '--no-verify']);
 
       assert.equal(run.status, 1, run.stdout);
       assert.match(run.stdout, /came without test recordings/);
@@ -406,33 +528,27 @@ describe(
     });
 
     it('records a runtime that loads when the model came without test recordings', () => {
-      // A library that loads and hears nothing, which is all a second of silence asks of it.
-      const runtime = runtimeWith(
-        [
-          'class OnlineRecognizer {',
-          '  createStream() { return { acceptWaveform() {}, inputFinished() {}, setOption() {} }; }',
-          '  isReady() { return false; }',
-          '  decode() {}',
-          '  isEndpoint() { return false; }',
-          '  reset() {}',
-          "  getResult() { return { text: '' }; }",
-          '}',
-          "module.exports = { OnlineRecognizer, version: '1.13.8' };",
-          '',
-        ].join('\n'),
-      );
+      const runtime = runtimeWith(LOADING_LIBRARY);
       const noRecordings = archive(`${MODEL}.tar.bz2`, modelFiles(MODEL));
 
-      const run = setup(['--runtime', runtime, '--model-url', pathToFileURL(noRecordings).href]);
+      const run = setup(['--runtime', runtime, '--model-url', pathToFileURL(noRecordings).href, '--no-verify']);
 
       assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
+      assert.match(run.stdout, /NOT verified \(--no-verify\)/);
       assert.match(run.stdout, /The speech library and the model loaded\. Nothing was transcribed\./);
       assert.match(run.stdout, /0 segment\(s\) from 1 s of audio/);
       const record = JSON.parse(readFileSync(join(runtime, 'runtime.json'), 'utf8')) as Record<string, unknown>;
       assert.equal(record.model, MODEL);
       assert.equal(record.chunkMs, 560);
+      assert.equal(record.sha256, sha256Of(noRecordings), 'recorded even when it was not checked');
+      assert.equal(record.sherpaVersion, '1.13.8');
       assert.equal(existsSync(join(runtime, '.self-test-silence.wav')), false);
       assert.deepEqual(readdirSync(join(runtime, 'models')).sort(), [MODEL, `${MODEL}.sha256`]);
+      assert.deepEqual(
+        readdirSync(runtime).filter((name) => name.endsWith('.tmp')),
+        [],
+        'runtime.json is renamed into place',
+      );
 
       // A runtime installed elsewhere than the default is the one thing left to set in the plugin.
       const closing = run.stdout.slice(run.stdout.indexOf('The speech runtime is ready.'));

@@ -48,11 +48,11 @@ curl -fsSL https://github.com/baconbro/magical-hamster/releases/latest/download/
 
 It downloads the setup script attached to the plugin's latest release, and runs it with your Node.js. The script:
 
-- installs the speech library, `sherpa-onnx-node` and `sherpa-onnx-darwin-arm64`, from the npm registry (about 10 MB);
-- downloads the Nemotron 3.5 ASR streaming model (int8, 560 ms) from the [sherpa-onnx releases on GitHub](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models), about 475 MB, checks its SHA-256 against the one GitHub publishes for it, and unpacks it (about 685 MB);
+- installs the speech library, `sherpa-onnx-node` and `sherpa-onnx-darwin-arm64`, from the npm registry (about 10 MB), at an exact version and with npm's install scripts off;
+- downloads the Nemotron 3.5 ASR streaming model (int8, 560 ms) from the [sherpa-onnx releases on GitHub](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models), about 475 MB, checks its SHA-256 against the one GitHub publishes for it (or, when GitHub cannot be asked, against the one pinned in the script), and unpacks it (about 685 MB);
 - writes the speech worker's scripts, transcribes a test recording, and records the result in `runtime.json`.
 
-Everything goes into `~/Library/Application Support/magical-hamster/`. Add `--dry-run` to see what it would do without doing it, and `--runtime <folder>` to use another folder (then name it in the settings, **Runtime folder**). Run it again to repair the runtime or to update the speech worker after a plugin update: it skips what is already there.
+Everything goes into `~/Library/Application Support/magical-hamster/`. Add `--dry-run` to see what it would do without doing it, and `--runtime <folder>` to use another folder (then name it in the settings, **Runtime folder**). `--model-url <url>` takes the model archive from a mirror or a file already downloaded, with `--sha256 <hex>` (from the release page) as its checksum; `--no-verify` skips the check, and the output says so. Run it again to repair the runtime or to update the speech worker after a plugin update: it skips what is already there.
 
 ## Privacy, network and files
 
