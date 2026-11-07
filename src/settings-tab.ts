@@ -6,6 +6,7 @@ import { remoteHostWarning } from './util/loopback.ts';
 import type { HamsterSettings, LocalSettings } from './types.ts';
 import { SPEECH_SETUP_COMMAND } from './project.ts';
 import { parseCompanionProperties } from './notes/companion.ts';
+import { hasDotSegments } from './notes/sanitize.ts';
 
 export interface SettingsTabDeps {
   settings(): HamsterSettings;
@@ -310,16 +311,29 @@ export function checkPrefix(prefix: string): string | null {
   return null;
 }
 
-/** Folders as typed, one per line: as vault paths (Obsidian's normalizePath), without duplicates. `/` is the whole vault. */
+/**
+ * Folders as typed, one per line: as vault paths (Obsidian's normalizePath),
+ * without duplicates. `/` is the whole vault. A line with a `.` or `..`
+ * segment names no folder of the vault and is left out.
+ */
 export function parseFolderList(text: string): string[] {
   const folders: string[] = [];
   for (const line of text.split('\n')) {
     const raw = line.trim();
     if (raw === '') continue;
     const folder = normalizePath(raw);
+    if (hasDotSegments(folder)) continue;
     if (!folders.includes(folder)) folders.push(folder);
   }
   return folders;
+}
+
+const DOT_SEGMENTS = 'A folder path cannot contain . or .. segments.';
+
+/** A typed folder as a vault path, or why it cannot be one. */
+function readFolder(raw: string): { value: string } | { error: string } {
+  const value = cleanPath(raw);
+  return hasDotSegments(value) ? { error: DOT_SEGMENTS } : { value };
 }
 
 /**
@@ -443,7 +457,7 @@ export class HamsterSettingTab extends PluginSettingTab {
           'Companion folder',
           'Where companion notes are created. The folder is created when missing. Empty means the vault root.',
           'companionFolder',
-          (raw) => ({ value: cleanPath(raw) }),
+          readFolder,
         ),
         this.text(
           'Companion prefix',
@@ -498,7 +512,7 @@ export class HamsterSettingTab extends PluginSettingTab {
           'Entity registry',
           'Optional. Vault path of a note that lists people, projects and governance bodies, to recognize meetings and attendees (see the README). Empty: none.',
           'entitiesPath',
-          (raw) => ({ value: cleanPath(raw) }),
+          readFolder,
         ),
         this.text(
           'Meeting lines without a heading',

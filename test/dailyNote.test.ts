@@ -2087,6 +2087,81 @@ describe('settings tab: the Ollama address', () => {
   });
 });
 
+describe('settings tab: the folder fields', () => {
+  interface Control {
+    type(value: string): void;
+  }
+  interface Row {
+    name: string;
+    error: string | null;
+    controls: Control[];
+  }
+  const globals = globalThis as { window?: unknown };
+
+  function open(name: string) {
+    let settings: HamsterSettings = { ...DEFAULT_SETTINGS };
+    const saved: Array<Partial<HamsterSettings>> = [];
+    const savedWindow = globals.window;
+    globals.window = {
+      setTimeout: (): number => 1,
+      clearTimeout: (): void => undefined,
+    };
+    const tab = new HamsterSettingTab(new FakeApp().app, {} as ConstructorParameters<typeof HamsterSettingTab>[1], {
+      settings: () => settings,
+      updateSettings: async (patch) => {
+        saved.push(patch);
+        settings = { ...settings, ...patch };
+      },
+      local: () => DEFAULT_LOCAL,
+      setLocal: () => undefined,
+      defaultRuntimeDir: () => '/runtime',
+      runtimeDir: () => '/runtime',
+      readRuntime: () => null,
+    });
+    drawTab(tab);
+    const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
+    const row = rows.find((candidate) => candidate.name === name);
+    assert.ok(row, `no setting named ${name}`);
+    return {
+      tab,
+      row,
+      field: row.controls[0],
+      saved,
+      close: (): void => {
+        globals.window = savedWindow;
+      },
+    };
+  }
+
+  for (const name of ['Companion folder', 'Entity registry']) {
+    it(`${name}: a path with a . or .. segment is refused and not saved`, () => {
+      const t = open(name);
+      try {
+        t.field.type('../outside');
+        assert.equal(t.row.error, 'A folder path cannot contain . or .. segments.');
+        t.field.type('10 Work/./x');
+        assert.equal(t.row.error, 'A folder path cannot contain . or .. segments.');
+        t.tab.hide();
+        assert.deepEqual(t.saved, []);
+      } finally {
+        t.close();
+      }
+    });
+  }
+
+  it('Companion folder: a vault path is saved without its outer slashes', () => {
+    const t = open('Companion folder');
+    try {
+      t.field.type(' /10 Work/Meetings/ ');
+      assert.equal(t.row.error, null);
+      t.tab.hide();
+      assert.deepEqual(t.saved, [{ companionFolder: '10 Work/Meetings' }]);
+    } finally {
+      t.close();
+    }
+  });
+});
+
 describe('settings tab: what the descriptions say', () => {
   /** The description under each setting of the tab, by the setting's name. */
   function descriptions(): Map<string, string> {
@@ -2439,6 +2514,10 @@ describe('parseFolderList', () => {
     assert.deepEqual(parseFolderList('a\na/\n/\n//\n'), ['a', '/']);
     assert.deepEqual(parseFolderList(''), []);
     assert.deepEqual(parseFolderList('\r\n a \r\n'), ['a']);
+  });
+
+  it('leaves out a line with a . or .. segment: it names no folder of the vault', () => {
+    assert.deepEqual(parseFolderList('../x\n/\n10 Work/./y\n10 Work/y\n'), ['/', '10 Work/y']);
   });
 });
 
