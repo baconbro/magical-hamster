@@ -46,7 +46,7 @@ The plugin does not download or install anything itself. Speech recognition is s
 curl -fsSL https://github.com/baconbro/magical-hamster/releases/latest/download/setup-speech.mjs -o setup-speech.mjs && node setup-speech.mjs
 ```
 
-It downloads the setup script attached to the plugin's latest release, and runs it with your Node.js. The script:
+It downloads the setup script attached to the plugin's latest release, and runs it with your Node.js. Settings, Magical Hamster, Speech shows the command for the version you have installed; run it again after a plugin update. The script:
 
 - installs the speech library, `sherpa-onnx-node` and `sherpa-onnx-darwin-arm64`, from the npm registry (about 10 MB), at an exact version and with npm's install scripts off;
 - downloads the Nemotron 3.5 ASR streaming model (int8, 560 ms) from the [sherpa-onnx releases on GitHub](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models), about 475 MB, checks its SHA-256 against the one GitHub publishes for it (or, when GitHub cannot be asked, against the one pinned in the script), and unpacks it (about 685 MB);

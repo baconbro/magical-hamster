@@ -935,4 +935,6 @@ export interface UiHost {
   renderMarkdown(markdown: string, el: HTMLElement): () => void;
   /** The exchanges with the model, for the Debug tab. Absent: no Debug tab. */
   callLog?: import('./llm/callLog.ts').CallLog;
+  /** The Terminal command that sets speech recognition up for this version of the plugin (`speechSetupCommand`). */
+  speechSetupCommand: string;
 }

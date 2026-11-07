@@ -1946,16 +1946,23 @@ describe('settings tab: the speech fields of this device', () => {
 
   const HOME = '/Users/someone';
   const DEFAULT_DIR = `${HOME}/Library/Application Support/magical-hamster`;
+  const PLUGIN_VERSION = '0.1.5';
+  const SETUP_COMMAND = 'curl … releases/download/0.1.5/setup-speech.mjs …';
 
-  /**
-   * The tab, drawn, over runtimes installed in the given directories (directory -> the Node its
-   * setup recorded). `vaultBase` is where the vault is on disk, when the adapter can say.
-   */
-  function open(installed: Record<string, string>, stored: Partial<typeof DEFAULT_LOCAL> = {}, vaultBase?: string) {
+  interface OpenOptions {
+    /** Where the vault is on disk, when the adapter can say. */
+    vaultBase?: string;
+    /** Directory -> the plugin version its setup recorded (null: none). This plugin's own when not named. */
+    versions?: Record<string, string | null>;
+  }
+
+  /** The tab, drawn, over runtimes installed in the given directories (directory -> the Node its setup recorded). */
+  function open(installed: Record<string, string>, stored: Partial<typeof DEFAULT_LOCAL> = {}, opts: OpenOptions = {}) {
     let local = { ...DEFAULT_LOCAL, ...stored };
     const asked: string[] = [];
     const fake = new FakeApp();
-    if (vaultBase !== undefined) Object.assign(fake.vault, { adapter: new obsidian.FileSystemAdapter(vaultBase) });
+    if (opts.vaultBase !== undefined) Object.assign(fake.vault, { adapter: new obsidian.FileSystemAdapter(opts.vaultBase) });
+    const versions = opts.versions ?? {};
     const tab = new HamsterSettingTab(fake.app, {} as ConstructorParameters<typeof HamsterSettingTab>[1], {
       settings: () => DEFAULT_SETTINGS,
       updateSettings: async () => undefined,
@@ -1968,8 +1975,12 @@ describe('settings tab: the speech fields of this device', () => {
       runtimeDir: () => resolveRuntimeDir(local.runtimeDir, HOME, 'darwin'),
       readRuntime: (dir) => {
         asked.push(dir);
-        return Object.hasOwn(installed, dir) ? { model: `model in ${dir}`, node: installed[dir] } : null;
+        if (!Object.hasOwn(installed, dir)) return null;
+        const workerVersion = Object.hasOwn(versions, dir) ? versions[dir] : PLUGIN_VERSION;
+        return { model: `model in ${dir}`, node: installed[dir], workerVersion };
       },
+      speechSetupCommand: SETUP_COMMAND,
+      pluginVersion: PLUGIN_VERSION,
     });
     drawTab(tab);
     const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
@@ -1984,6 +1995,8 @@ describe('settings tab: the speech fields of this device', () => {
       node: () => row('Node path'),
       folder: () => row('Runtime folder'),
       status: () => row('Speech runtime').desc,
+      statusWarns: () => row('Speech runtime').descEl.classes.has('mod-warning'),
+      setup: () => row('Set up speech recognition'),
     };
   }
 
@@ -1995,7 +2008,43 @@ describe('settings tab: the speech fields of this device', () => {
     assert.equal(field.placeholder, '/Users/someone/.local/node-24/bin/node');
     assert.match(tab.node().desc, /Leave empty to use the Node that the speech setup recorded\./);
     assert.equal(tab.status(), `Installed: model in ${DEFAULT_DIR}`);
+    assert.equal(tab.statusWarns(), false);
     assert.deepEqual([...new Set(tab.asked)], [DEFAULT_DIR]);
+  });
+
+  it('asks for the setup to be run again when the runtime was set up by another plugin version, or by none', () => {
+    const older = open({ [DEFAULT_DIR]: '/recorded/node' }, {}, { versions: { [DEFAULT_DIR]: '0.0.9' } });
+    assert.equal(
+      older.status(),
+      `Installed: model in ${DEFAULT_DIR} Set up by plugin version 0.0.9 (this is 0.1.5); run the setup command again.`,
+    );
+    assert.equal(older.statusWarns(), true);
+
+    const unversioned = open({ [DEFAULT_DIR]: '/recorded/node' }, {}, { versions: { [DEFAULT_DIR]: null } });
+    assert.equal(
+      unversioned.status(),
+      `Installed: model in ${DEFAULT_DIR} Set up by an earlier plugin version (this is 0.1.5); run the setup command again.`,
+    );
+    assert.equal(unversioned.statusWarns(), true);
+
+    // A patch apart is the same worker; a folder typed in is judged by its own record.
+    const same = open(
+      { [DEFAULT_DIR]: '/recorded/node', '/Volumes/Fast/hamster': '/fast/node' },
+      {},
+      { versions: { [DEFAULT_DIR]: '0.1.9', '/Volumes/Fast/hamster': '0.2.0' } },
+    );
+    assert.equal(same.status(), `Installed: model in ${DEFAULT_DIR}`);
+    assert.equal(same.statusWarns(), false);
+    same.folder().controls[0].type('/Volumes/Fast/hamster');
+    assert.match(same.status(), /Set up by plugin version 0\.2\.0 \(this is 0\.1\.5\); run the setup command again\.$/);
+    assert.equal(same.statusWarns(), true);
+    same.folder().controls[0].type('');
+    assert.equal(same.statusWarns(), false);
+  });
+
+  it('shows and copies the setup command it is handed, the one for this version of the plugin', () => {
+    const tab = open({});
+    assert.match(tab.setup().desc, /The command \(the button copies it\): curl … releases\/download\/0\.1\.5\/setup-speech\.mjs … \(in Terminal\)\.$/);
   });
 
   it('shows an example path when no speech runtime is installed', () => {
@@ -2079,7 +2128,7 @@ describe('settings tab: the speech fields of this device', () => {
 
   it('warns under a runtime folder inside the vault, where the adapter can say where the vault is', () => {
     const vault = `${HOME}/Vault`;
-    const tab = open({}, { runtimeDir: `${vault}/hamster` }, vault);
+    const tab = open({}, { runtimeDir: `${vault}/hamster` }, { vaultBase: vault });
     const warning = /This folder is inside the vault: the model, the index and the stats would be synced with your notes\. Choose a folder outside it\.$/;
     assert.match(tab.folder().desc, warning, 'said as the tab is drawn');
     assert.equal(tab.folder().descEl.classes.has('mod-warning'), true);
@@ -2112,6 +2161,8 @@ describe('settings tab: the speech fields of this device', () => {
       readRuntime: () => {
         throw new Error('EACCES');
       },
+      speechSetupCommand: SETUP_COMMAND,
+      pluginVersion: PLUGIN_VERSION,
     });
     drawTab(tab);
     const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
@@ -2199,6 +2250,8 @@ describe('settings tab: the Ollama address', () => {
       defaultRuntimeDir: () => '/runtime',
       runtimeDir: () => '/runtime',
       readRuntime: () => null,
+      speechSetupCommand: 'curl …',
+      pluginVersion: null,
     });
     drawTab(tab);
     const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
@@ -2397,6 +2450,8 @@ describe('settings tab: the folder fields', () => {
       defaultRuntimeDir: () => '/runtime',
       runtimeDir: () => '/runtime',
       readRuntime: () => null,
+      speechSetupCommand: 'curl …',
+      pluginVersion: null,
     });
     drawTab(tab);
     const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
@@ -2453,6 +2508,8 @@ describe('settings tab: what the descriptions say', () => {
       defaultRuntimeDir: () => '/runtime',
       runtimeDir: () => '/runtime',
       readRuntime: () => null,
+      speechSetupCommand: 'curl -fsSL https://example.test/setup-speech.mjs -o setup-speech.mjs && node setup-speech.mjs',
+      pluginVersion: null,
     });
     drawTab(tab);
     const rows = (tab.containerEl as unknown as { rows: Array<{ name: string; desc: string }> }).rows;
@@ -2509,6 +2566,8 @@ describe('settings tab: the definitions Obsidian searches and draws', () => {
       defaultRuntimeDir: () => use('defaultRuntimeDir', '/runtime'),
       runtimeDir: () => use('runtimeDir', '/runtime'),
       readRuntime: () => use('readRuntime', null),
+      speechSetupCommand: 'curl …',
+      pluginVersion: '0.1.5',
     });
     const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
 
@@ -2552,7 +2611,9 @@ describe('settings tab: the definitions Obsidian searches and draws', () => {
       },
       defaultRuntimeDir: () => '/runtime',
       runtimeDir: () => local.runtimeDir || '/runtime',
-      readRuntime: (dir) => (dir === '/fast' ? { model: 'fast model', node: '/fast/node' } : null),
+      readRuntime: (dir) => (dir === '/fast' ? { model: 'fast model', node: '/fast/node', workerVersion: '0.1.5' } : null),
+      speechSetupCommand: 'curl …',
+      pluginVersion: '0.1.5',
     });
     // As Obsidian does: the list it is given when the plugin loads is the one it draws every time.
     const loaded = tab.getSettingDefinitions();

@@ -14,6 +14,7 @@ import { createVaultIndexIO } from './host/vaultIndexIO.ts';
 import { createOllamaClient } from './llm/ollama.ts';
 import { CompanionStore } from './notes/companionStore.ts';
 import { TextTarget, bufferFileField } from './notes/textTarget.ts';
+import { speechSetupCommand } from './project.ts';
 import { createSession } from './session/meetingSession.ts';
 import { DEFAULT_LOCAL, DEFAULT_SETTINGS, PLUGIN_ID, VIEW_TYPE, parseSettings } from './settings.ts';
 import { HamsterSettingTab, checkSoftMarkerPattern } from './settings-tab.ts';
@@ -114,6 +115,12 @@ export default class MagicalHamsterPlugin extends Plugin {
        while it is typed would create a folder for each character, and would
        then write what was loaded from the old folder over what the new one holds. */
     const ioDir = runtimeDir();
+    /* The plugin's own version: the setup command names its release, so that
+       the worker installed is the one this build was made with, and a runtime
+       set up by another major.minor is pointed out. The manifest is Obsidian's
+       to give; the tests' stub may give none. */
+    const pluginVersion = this.manifest?.version ?? null;
+    const setupCommand = speechSetupCommand(pluginVersion);
 
     const callLog = createCallLog({ clock, enabled: this.local.debugTab });
     this.callLog = callLog;
@@ -130,6 +137,7 @@ export default class MagicalHamsterPlugin extends Plugin {
           // The source takes the paths as they are written: it gets the resolved ones.
           local,
           language: () => this.settings.sttLanguage,
+          pluginVersion: pluginVersion ?? undefined,
         }),
       vaultIndexIO: createVaultIndexIO(app, () => ioDir),
       statsIO: createStatsIO(() => ioDir),
@@ -147,7 +155,7 @@ export default class MagicalHamsterPlugin extends Plugin {
        Obsidian's: that one hands its output to every plugin's post-processor
        (Dataview runs a `dataviewjs` block) and fetches images and raw tags as
        it draws them. See src/ui/miniMarkdown.ts. */
-    const host: UiHost = { renderMarkdown: renderMiniMarkdown, callLog };
+    const host: UiHost = { renderMarkdown: renderMiniMarkdown, callLog, speechSetupCommand: setupCommand };
     this.registerView(
       VIEW_TYPE,
       (leaf: WorkspaceLeaf) =>
@@ -310,6 +318,8 @@ export default class MagicalHamsterPlugin extends Plugin {
         defaultRuntimeDir,
         runtimeDir,
         readRuntime,
+        speechSetupCommand: setupCommand,
+        pluginVersion,
       }),
     );
 

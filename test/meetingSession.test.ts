@@ -3062,6 +3062,24 @@ describe('recording', () => {
     assert.deepEqual(env.world.notes.notices.slice(2), [unsupported]);
   });
 
+  it('says once that the speech runtime was set up by another plugin version, and records on', async () => {
+    const env = await boot();
+    env.c.selectSection(JANE);
+    await env.c.startRecording();
+    const source = env.world.sources[0];
+    // What the node source says before its worker starts (nodeSttSource.ts), as a warning, not a failure.
+    const outdated =
+      'The speech runtime was set up by plugin version 0.1.4; this is 0.2.0. Run the speech setup command again (Settings, Magical Hamster, Speech).';
+
+    source.emit({ type: 'error', code: 'worker_outdated', message: outdated });
+    source.emit({ type: 'error', code: 'worker_outdated', message: outdated });
+    assert.deepEqual(env.world.notes.notices, [outdated]);
+    assert.equal(env.state().recording, 'recording');
+    assert.equal(env.state().recordingError, null);
+    assert.notEqual(env.state().stt, 'failed', 'the worker there is still transcribes');
+    assert.notEqual(env.state().stt, 'not-installed');
+  });
+
   it('ignores a stop when nothing is being recorded', async () => {
     const env = await boot();
     env.c.selectSection(JANE);

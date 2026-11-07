@@ -18,6 +18,7 @@ import {
   resolveNodePath,
   resolveRuntimeDir,
   workerCommand,
+  workerOutdated,
 } from '../src/host/runtime.ts';
 import type { RuntimeInfo, WorkerCommand } from '../src/host/runtime.ts';
 import { createStatsIO } from '../src/host/statsIO.ts';
@@ -84,6 +85,7 @@ const RECORD = {
   chunkMs: 560,
   sha256: 'c6bf5e0df765f9d5b43bc9e0536d4b4b3e7d40bdf5ecf13e45f134c51c05ae3a',
   sherpaVersion: '1.13.8',
+  workerVersion: '0.1.4',
   installedAt: '2026-10-10T12:00:00.000Z',
 };
 const INFO: RuntimeInfo = {
@@ -92,6 +94,7 @@ const INFO: RuntimeInfo = {
   modelDir: `${RT}/models/${MODEL}`,
   model: MODEL,
   chunkMs: 560,
+  workerVersion: '0.1.4',
 };
 
 test('defaultRuntimeDir is the directory setup:stt installs into', () => {
@@ -234,6 +237,32 @@ test('parseRuntime does not need the record to name its own directory', () => {
   assert.deepEqual(parseRuntime(record, RT), INFO);
 });
 
+test('parseRuntime keeps the plugin version the setup came from, and has none for a record without one', () => {
+  assert.equal(parseRuntime(RECORD, RT)?.workerVersion, '0.1.4');
+  const record: Record<string, unknown> = { ...RECORD };
+  delete record.workerVersion;
+  assert.deepEqual(parseRuntime(record, RT), { ...INFO, workerVersion: null }, 'a runtime set up before versions were recorded');
+  assert.equal(parseRuntime({ ...RECORD, workerVersion: null }, RT)?.workerVersion, null, 'a setup run from a checkout');
+  assert.equal(parseRuntime({ ...RECORD, workerVersion: 14 }, RT)?.workerVersion, null, 'not a string');
+  assert.equal(parseRuntime({ ...RECORD, workerVersion: '' }, RT)?.workerVersion, '', 'a string is kept as written');
+});
+
+test('workerOutdated compares the major.minor of the setup with the plugin’s, and counts no version as outdated', () => {
+  assert.equal(workerOutdated('0.1.5', '0.1.9'), false, 'a patch apart');
+  assert.equal(workerOutdated('0.1.5', '0.1.5'), false);
+  assert.equal(workerOutdated('0.1.9', '0.1.5'), false, 'a newer patch is the same worker');
+  assert.equal(workerOutdated('0.1.5', '0.2.0'), true);
+  assert.equal(workerOutdated('0.2.0', '0.1.5'), true, 'a worker from a later minor is not this plugin’s either');
+  assert.equal(workerOutdated('0.1.5', '1.1.5'), true);
+  assert.equal(workerOutdated('0.10.0', '0.1.0'), true, 'read as numbers, not as text');
+  assert.equal(workerOutdated('0.01.0', '0.1.0'), false);
+  assert.equal(workerOutdated(null, '0.1.5'), true);
+  assert.equal(workerOutdated('', '0.1.5'), true);
+  assert.equal(workerOutdated('yesterday', '0.1.5'), true);
+  assert.equal(workerOutdated('0.1.5', 'dev'), false, 'a plugin whose version cannot be read asks for nothing');
+  assert.equal(workerOutdated(null, 'dev'), true, 'but a runtime without a version is still from before');
+});
+
 test('parseRuntime trusts the directory the file was found in over the one it records', () => {
   const moved = '/Volumes/Fast/hamster';
   const info = parseRuntime(RECORD, moved);
@@ -275,6 +304,7 @@ test('readRuntime wants the worker script beside the record', () => {
     modelDir: join(dir, 'models', 'm'),
     model: MODEL,
     chunkMs: 560,
+    workerVersion: '0.1.4',
   });
 });
 
@@ -1205,6 +1235,8 @@ interface HarnessOptions {
   runtime?: RuntimeInfo | null;
   local?: Partial<LocalSettings>;
   language?: SttLanguage;
+  /** The plugin's version, for the check against the runtime's. Absent, as main.ts without a manifest: no check. */
+  pluginVersion?: string;
   exists?(path: string): boolean;
   /** Makes every spawn throw instead of returning a child. */
   spawnError?: Error;
@@ -1221,6 +1253,7 @@ function harness(options: HarnessOptions = {}) {
     clock,
     local: () => ({ ...DEFAULT_LOCAL, runtimeDir: RT, micDeviceId: 'usb-mic', ...options.local }),
     language: () => options.language ?? 'fr-CA',
+    pluginVersion: options.pluginVersion,
     readRuntime(dir) {
       runtimeDirs.push(dir);
       return options.runtime === undefined ? INFO : options.runtime;
@@ -1375,6 +1408,47 @@ test('source: starts the worker, then the microphone, then announces it', async 
   assert.deepEqual(t.events, [READY]);
   assert.deepEqual(t.stateNames(), ['spawning', 'ready', 'running']);
   assert.deepEqual(t.log, ['hello', 'pcm']);
+});
+
+test('source: a runtime set up by another plugin version is said once, before the worker starts, and still records', async () => {
+  const t = harness({ runtime: { ...INFO, workerVersion: '0.1.4' }, pluginVersion: '0.2.0' });
+  const started = t.source.start();
+  const outdated = {
+    type: 'error',
+    code: 'worker_outdated',
+    message:
+      'The speech runtime was set up by plugin version 0.1.4; this is 0.2.0. Run the speech setup command again (Settings, Magical Hamster, Speech).',
+  };
+  assert.deepEqual(t.events, [outdated], 'heard before anything the worker says');
+  assert.equal(t.children.length, 1, 'the worker there is still runs');
+
+  t.child().emit(READY);
+  await settle();
+  t.mic.open();
+  await started;
+  assert.equal(t.source.state(), 'ready');
+  assert.deepEqual(t.events, [outdated, READY]);
+  assert.deepEqual(t.child().controls(), [{ type: 'hello', source: 'mic', sampleRate: 16000 }]);
+});
+
+test('source: a runtime that recorded no version is from before, and the words say so', async () => {
+  const t = harness({ runtime: { ...INFO, workerVersion: null }, pluginVersion: '0.1.5' });
+  void t.source.start().catch(() => undefined);
+  assert.equal(t.events.length, 1);
+  assert.match(
+    (t.events[0] as { message?: string }).message ?? '',
+    /^The speech runtime was set up by an earlier plugin version; this is 0\.1\.5\. Run the speech setup command again/,
+  );
+});
+
+test('source: a runtime of the same major.minor, or a plugin without a version, says nothing about it', async () => {
+  const same = harness({ runtime: { ...INFO, workerVersion: '0.1.9' }, pluginVersion: '0.1.5' });
+  void same.source.start().catch(() => undefined);
+  assert.deepEqual(same.events, []);
+
+  const unknown = harness({ runtime: { ...INFO, workerVersion: null } });
+  void unknown.source.start().catch(() => undefined);
+  assert.deepEqual(unknown.events, [], 'nothing to compare with');
 });
 
 test('source: start is one-shot', async () => {

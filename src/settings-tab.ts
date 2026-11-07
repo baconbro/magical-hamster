@@ -2,14 +2,13 @@ import { isAbsolute } from 'node:path';
 import { PluginSettingTab, Setting, normalizePath } from 'obsidian';
 import type { App, DropdownComponent, Plugin, TextComponent } from 'obsidian';
 import { showNotice } from './host/notice.ts';
-import { isInside } from './host/runtime.ts';
+import { isInside, workerOutdated } from './host/runtime.ts';
 import { SETTING_RANGES, addressProblem, checkPrefix, softMarkerUnsupported } from './settings.ts';
 import type { NumberRule } from './settings.ts';
 export { checkPrefix } from './settings.ts';
 export type { NumberRule } from './settings.ts';
 import { remoteHostWarning } from './util/loopback.ts';
 import type { HamsterSettings, LocalSettings } from './types.ts';
-import { SPEECH_SETUP_COMMAND } from './project.ts';
 import { parseCompanionProperties } from './notes/companion.ts';
 import { hasDotSegments } from './notes/sanitize.ts';
 
@@ -25,11 +24,17 @@ export interface SettingsTabDeps {
   runtimeDir(): string;
   /** The speech runtime installed in that directory, or null. `node` is the Node its setup recorded. */
   readRuntime(runtimeDir: string): InstalledRuntime | null;
+  /** The Terminal command that sets speech up for this version of the plugin (`speechSetupCommand` in project.ts). */
+  speechSetupCommand: string;
+  /** The plugin's own version, to tell a runtime set up by another one; null when the manifest has none. */
+  pluginVersion: string | null;
 }
 
 export interface InstalledRuntime {
   model: string;
   node: string;
+  /** The plugin version the setup that wrote the runtime came from; null when it recorded none. */
+  workerVersion: string | null;
 }
 
 /* Text fields are saved once typing pauses: every save makes the session
@@ -351,6 +356,22 @@ export function nodePathPlaceholder(installed: { node: string } | null): string 
   return installed?.node.trim() || NODE_PATH_EXAMPLE;
 }
 
+/**
+ * What the Speech runtime row says: the model installed, and, when the setup
+ * that wrote it came from another major.minor of the plugin than this one, that
+ * the setup is to be run again. The worker only changes when the setup runs.
+ */
+export function describeInstalledRuntime(
+  installed: InstalledRuntime | null,
+  pluginVersion: string | null,
+): { text: string; warning: boolean } {
+  if (installed === null) return { text: 'Not installed. Set it up with the command below.', warning: false };
+  const text = `Installed: ${installed.model}`;
+  if (pluginVersion === null || !workerOutdated(installed.workerVersion, pluginVersion)) return { text, warning: false };
+  const by = installed.workerVersion === null ? 'an earlier plugin version' : `plugin version ${installed.workerVersion}`;
+  return { text: `${text} Set up by ${by} (this is ${pluginVersion}); run the setup command again.`, warning: true };
+}
+
 function cleanPath(value: string): string {
   const trimmed = value.trim();
   if (trimmed === '' || /^\/+$/.test(trimmed)) return '';
@@ -626,19 +647,19 @@ export class HamsterSettingTab extends PluginSettingTab {
             const installed = this.installedRuntime();
             // Each runtime folder records its own Node: the empty field shows the one it would run.
             this.showNodePlaceholder(nodePathPlaceholder(installed));
-            setting.setDesc(
-              installed ? `Installed: ${installed.model}` : 'Not installed. Set it up with the command below.',
-            );
+            const { text, warning } = describeInstalledRuntime(installed, this.deps.pluginVersion);
+            setting.setDesc(text);
+            setting.descEl.toggleClass('mod-warning', warning);
           };
           this.showRuntime();
         }),
         row(
           'Set up speech recognition',
-          `Once, in Terminal (Applications, Utilities), with Node.js 22 or later installed. It downloads about 475 MB, the sherpa-onnx speech library from npm and the speech model from GitHub, into the runtime folder; run it again to repair or update. For a runtime folder of your own, add --runtime and the folder. The command (the button copies it): ${SPEECH_SETUP_COMMAND} (in Terminal).`,
+          `Once, in Terminal (Applications, Utilities), with Node.js 22 or later installed. It downloads about 475 MB, the sherpa-onnx speech library from npm and the speech model from GitHub, into the runtime folder; run it again to repair or update. For a runtime folder of your own, add --runtime and the folder. The command (the button copies it): ${this.deps.speechSetupCommand} (in Terminal).`,
           (setting) => {
             setting.addButton((button) => {
               button.setButtonText('Copy command').onClick(() => {
-                navigator.clipboard.writeText(SPEECH_SETUP_COMMAND).then(
+                navigator.clipboard.writeText(this.deps.speechSetupCommand).then(
                   () => showNotice('Setup command copied: paste it into Terminal.'),
                   (error: unknown) => console.error('Magical Hamster: could not copy', error),
                 );

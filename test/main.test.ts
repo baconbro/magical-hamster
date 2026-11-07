@@ -55,9 +55,9 @@ export class PluginSettingTab {
   hide() {}
 }
 export class FileSystemAdapter {}
-// What a plugin gets from Obsidian: its data.json, and places to register things.
+// What a plugin gets from Obsidian: its data.json, its manifest, and places to register things.
 export class Plugin {
-  constructor(app, data) { this.app = app; this.data = data; }
+  constructor(app, data, manifest) { this.app = app; this.data = data; this.manifest = manifest; }
   async loadData() { return this.data === null ? null : structuredClone(this.data); }
   async saveData(data) { this.data = structuredClone(data); }
   registerView(type, factory) { record.views.push({ type, factory }); }
@@ -153,7 +153,16 @@ interface TabDeps {
   local(): LocalSettings;
   setLocal(patch: Partial<LocalSettings>): void;
   runtimeDir(): string;
+  speechSetupCommand: string;
+  pluginVersion: string | null;
 }
+
+/** What manifest.json gives Obsidian, as far as main.ts reads it. */
+interface Manifest {
+  id: string;
+  version?: string;
+}
+const MANIFEST: Manifest = { id: 'magical-hamster', version: '0.1.5' };
 
 /**
  * The plugin, loaded over the given data.json and device settings, as far as
@@ -166,6 +175,7 @@ async function load(
   storage = new Map<string, unknown>(),
   /** Paths the vault's adapter says exist: Obsidian's config files, and the plugin's own data.json. */
   onDisk: string[] = [],
+  manifest: Manifest | null = MANIFEST,
 ) {
   record.notices.length = 0;
   record.rendered.length = 0;
@@ -202,13 +212,13 @@ async function load(
       storage.set(key, value);
     },
   };
-  const Plugin = MagicalHamsterPlugin as unknown as new (app: object, data: object | null) => {
+  const Plugin = MagicalHamsterPlugin as unknown as new (app: object, data: object | null, manifest: Manifest | null) => {
     data: Partial<HamsterSettings> | null;
     settings: HamsterSettings;
     onload(): Promise<void>;
     onExternalSettingsChange(): Promise<void>;
   };
-  const plugin = new Plugin(app, data);
+  const plugin = new Plugin(app, data, manifest);
   await plugin.onload();
   const session = record.sessions.at(-1);
   const view = record.views.at(-1);
@@ -448,6 +458,30 @@ describe('main: the Markdown renderer handed to the sidebar', () => {
     assert.equal(el.children.length, 1);
     cleanup();
     assert.equal(el.children.length, 0, 'the cleanup takes the output out again');
+  });
+});
+
+describe('main: the speech setup command handed to the sidebar and the settings tab', () => {
+  it('names the release this plugin is, so that the worker installed is the one it was built with', async () => {
+    const t = await load();
+    const command = 'curl -fsSL https://github.com/baconbro/magical-hamster/releases/download/0.1.5/setup-speech.mjs -o setup-speech.mjs && node setup-speech.mjs';
+    assert.equal(t.host.speechSetupCommand, command);
+    assert.equal(t.tab.speechSetupCommand, command, 'the settings tab shows and copies the same one');
+    assert.equal(t.tab.pluginVersion, '0.1.5');
+  });
+
+  it('falls back to the latest release when the manifest gives no version, or not a release’s', async () => {
+    const latest = /\/releases\/latest\/download\/setup-speech\.mjs /;
+    const none = await load(null, {}, new Map(), [], { id: 'magical-hamster' });
+    assert.match(none.host.speechSetupCommand, latest);
+    assert.equal(none.tab.pluginVersion, null);
+
+    const dev = await load(null, {}, new Map(), [], { id: 'magical-hamster', version: '0.2.0-dev' });
+    assert.match(dev.host.speechSetupCommand, latest);
+    assert.equal(dev.tab.pluginVersion, '0.2.0-dev', 'still the version the runtime is compared with');
+
+    const absent = await load(null, {}, new Map(), [], null);
+    assert.match(absent.host.speechSetupCommand, latest);
   });
 });
 

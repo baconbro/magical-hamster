@@ -14,6 +14,12 @@ export interface RuntimeInfo {
   modelDir: string;
   model: string;
   chunkMs: number;
+  /**
+   * The plugin version the setup script was built from, which is the version
+   * of the worker it wrote. Null when the record has none: a setup script run
+   * from a checkout without one, or a runtime set up before this was recorded.
+   */
+  workerVersion: string | null;
 }
 
 export interface WorkerCommand {
@@ -137,8 +143,30 @@ export function parseRuntime(json: unknown, runtimeDir: string): RuntimeInfo | n
   const dir = resolve(runtimeDir);
   const recordedDir = nonEmptyString(o.runtimeDir) && isAbsolute(o.runtimeDir) ? resolve(o.runtimeDir) : dir;
   const modelDir = isAbsolute(o.modelDir) ? rebase(resolve(o.modelDir), recordedDir, dir) : resolve(dir, o.modelDir);
+  const workerVersion = typeof o.workerVersion === 'string' ? o.workerVersion : null;
 
-  return { node: o.node, runtimeDir: dir, modelDir, model: o.model, chunkMs: o.chunkMs };
+  return { node: o.node, runtimeDir: dir, modelDir, model: o.model, chunkMs: o.chunkMs, workerVersion };
+}
+
+/** `major.minor` of a version, or null when it does not start like one. */
+function majorMinor(version: string | null): string | null {
+  const found = /^\s*v?(\d+)\.(\d+)(?:\.|$|[^\d])/.exec(version ?? '');
+  return found ? `${Number(found[1])}.${Number(found[2])}` : null;
+}
+
+/**
+ * Whether a runtime set up by plugin version `worker` should be set up again
+ * for plugin version `plugin`: the two differ in major.minor. The worker is
+ * copied into the runtime only by the setup, so a plugin updated since runs a
+ * worker written for another release. A record without a version (null) is
+ * from before versions were recorded, or from a checkout, and counts as
+ * outdated. A plugin whose own version cannot be read asks for nothing.
+ */
+export function workerOutdated(worker: string | null, plugin: string): boolean {
+  const have = majorMinor(worker);
+  if (have === null) return true;
+  const want = majorMinor(plugin);
+  return want !== null && have !== want;
 }
 
 /** Reads <runtimeDir>/runtime.json written by `pnpm setup:stt`. Null when it is missing or unusable. */
