@@ -25,8 +25,21 @@ interface Recorded {
   sessions: FakeSession[];
   views: Array<{ type: string; factory: (leaf: object) => { getProps(): { host: UiHost } } }>;
   tabs: object[];
+  commands: Array<{ id: string; name: string }>;
+  ribbons: Array<{ icon: string; title: string }>;
+  /** Event, DOM event and interval registrations: what onunload hands back to Obsidian. */
+  registrations: number;
 }
-const record: Recorded = { notices: [], rendered: [], sessions: [], views: [], tabs: [] };
+const record: Recorded = {
+  notices: [],
+  rendered: [],
+  sessions: [],
+  views: [],
+  tabs: [],
+  commands: [],
+  ribbons: [],
+  registrations: 0,
+};
 (globalThis as { __hamsterMain?: Recorded }).__hamsterMain = record;
 
 // Moment is a dependency of the `obsidian` package, not of this repository.
@@ -63,11 +76,11 @@ export class Plugin {
   registerView(type, factory) { record.views.push({ type, factory }); }
   addSettingTab(tab) { record.tabs.push(tab); }
   registerEditorExtension() {}
-  addRibbonIcon() {}
-  addCommand() {}
-  registerEvent() {}
-  registerDomEvent() {}
-  registerInterval() {}
+  addRibbonIcon(icon, title) { record.ribbons.push({ icon, title }); }
+  addCommand(command) { record.commands.push({ id: command.id, name: command.name }); }
+  registerEvent() { record.registrations += 1; }
+  registerDomEvent() { record.registrations += 1; }
+  registerInterval() { record.registrations += 1; }
 }
 export function normalizePath(path) {
   const clean = path.replace(/[\\\\/]+/g, '/').replace(/^\\/+|\\/+$/g, '');
@@ -90,8 +103,8 @@ export function createSession(deps) {
     handleDailyAvailability: note('handleDailyAvailability'),
     handleVaultChange: note('handleVaultChange'),
     handleSettingsChange: note('handleSettingsChange'),
-    flushAll: async () => undefined,
-    dispose: async () => undefined,
+    flushAll: async () => { calls.push(['flushAll']); },
+    dispose: async () => { calls.push(['dispose']); },
   };
   record.sessions.push(session);
   return session;
@@ -179,6 +192,9 @@ async function load(
 ) {
   record.notices.length = 0;
   record.rendered.length = 0;
+  record.commands.length = 0;
+  record.ribbons.length = 0;
+  record.registrations = 0;
   storage.set(LOCAL_KEY, local);
   const ready: Array<() => void> = [];
   const listen = (): object => ({});
@@ -216,6 +232,7 @@ async function load(
     data: Partial<HamsterSettings> | null;
     settings: HamsterSettings;
     onload(): Promise<void>;
+    onunload(): void;
     onExternalSettingsChange(): Promise<void>;
   };
   const plugin = new Plugin(app, data, manifest);
@@ -245,6 +262,45 @@ async function load(
 const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 /* Read through a function: an assertion that the list is empty would otherwise narrow it for the rest of a test. */
 const notices = (): Recorded['notices'] => record.notices;
+
+describe('main: the commands, the ribbon and unload', () => {
+  it('registers these commands, in sentence case and without the plugin name', async () => {
+    await load();
+    assert.deepEqual(record.commands, [
+      { id: 'open', name: 'Open sidebar' },
+      { id: 'use-this-note', name: 'Use the open note for the meeting' },
+      { id: 'write-meeting-into-note', name: 'Write the meeting into the open note' },
+      { id: 'toggle-debug-tab', name: 'Show or hide the model exchange log' },
+      { id: 'toggle-recording', name: 'Start or stop recording' },
+      { id: 'new-meeting', name: 'New meeting' },
+      { id: 'create-companion', name: 'Create companion note' },
+      { id: 'enhance-now', name: 'Enhance notes now' },
+    ]);
+    for (const { id, name } of record.commands) {
+      assert.doesNotMatch(id, /hamster|command/i, id);
+      assert.doesNotMatch(name, /hamster|command/i, name);
+      assert.match(name, /^[A-Z][^A-Z]*$|^[A-Z]/, `${name} starts with one capital`);
+    }
+    assert.deepEqual(record.ribbons, [{ icon: 'audio-lines', title: 'Open Magical Hamster' }]);
+    assert.ok(record.registrations >= 10, 'the workspace, vault and metadata events are registered with Obsidian');
+  });
+
+  it('unload closes the session once, and a load after it registers nothing more', async () => {
+    const t = await load();
+    const before = t.session.calls.filter(([name]) => name === 'dispose').length;
+    t.plugin.onunload();
+    assert.equal(t.session.calls.filter(([name]) => name === 'dispose').length, before + 1);
+    t.plugin.onunload();
+    assert.equal(t.session.calls.filter(([name]) => name === 'dispose').length, before + 1, 'the session is let go of');
+
+    // Obsidian turned the plugin off while onload was still reading: nothing may stay registered.
+    const views = record.views.length;
+    const commands = record.commands.length;
+    await t.plugin.onload();
+    assert.equal(record.views.length, views);
+    assert.equal(record.commands.length, commands);
+  });
+});
 
 describe('main: the settings file', () => {
   const unreadable = (): Recorded['notices'] => notices().filter((n) => /settings file/.test(n.message));
