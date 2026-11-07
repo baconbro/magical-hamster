@@ -37,8 +37,10 @@ function useApp(): AppProps {
  */
 export function useHamster<T>(selector: (state: HamsterState) => T): T {
   const { store } = useApp();
+  // Called through the store, and the same function from one render to the next: React subscribes again when it changes.
+  const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
   return useSyncExternalStore(
-    store.subscribe,
+    subscribe,
     () => selector(store.getState()),
     () => selector(store.getState()),
   );
@@ -73,11 +75,16 @@ export function useUiHost(): UiHost {
 const NO_ENTRIES: readonly import('../llm/callLog.ts').LogEntry[] = [];
 const noSubscribe = (): (() => void) => () => {};
 
+/** The call log's subscribe, called through the log, and stable while the log is the same. */
+function useLogSubscribe(log: UiHost['callLog']): (listener: () => void) => () => void {
+  return useCallback((listener: () => void) => (log ? log.subscribe(listener) : noSubscribe()), [log]);
+}
+
 /** True while the Debug tab is switched on (per device, in the plugin's settings). */
 export function useDebugOn(): boolean {
   const log = useApp().host.callLog;
   return useSyncExternalStore(
-    log ? log.subscribe : noSubscribe,
+    useLogSubscribe(log),
     () => log?.enabled() ?? false,
     () => log?.enabled() ?? false,
   );
@@ -87,7 +94,7 @@ export function useDebugOn(): boolean {
 export function useCallEntries(): readonly import('../llm/callLog.ts').LogEntry[] {
   const log = useApp().host.callLog;
   return useSyncExternalStore(
-    log ? log.subscribe : noSubscribe,
+    useLogSubscribe(log),
     () => log?.entries() ?? NO_ENTRIES,
     () => log?.entries() ?? NO_ENTRIES,
   );

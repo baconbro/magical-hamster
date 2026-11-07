@@ -200,7 +200,7 @@ export function parseMiniMarkdown(markdown: string): MdBlock[] {
     if (open.code) {
       const mark = line.trim();
       // The closing fence: the same character, at least as long, nothing else on the line.
-      if (mark.length >= open.code.mark.length && mark === open.code.mark[0]!.repeat(mark.length)) flushCode();
+      if (mark.length >= open.code.mark.length && mark === open.code.mark[0].repeat(mark.length)) flushCode();
       else open.code.lines.push(line);
       continue;
     }
@@ -208,7 +208,7 @@ export function parseMiniMarkdown(markdown: string): MdBlock[] {
     if (fence) {
       flushParagraph();
       flushList();
-      open.code = { mark: fence[1] as string, lines: [] };
+      open.code = { mark: fence[1], lines: [] };
       continue;
     }
 
@@ -222,19 +222,19 @@ export function parseMiniMarkdown(markdown: string): MdBlock[] {
     if (heading) {
       flushParagraph();
       flushList();
-      blocks.push({ type: 'heading', level: (heading[1] as string).length, children: parseInline(heading[2] as string) });
+      blocks.push({ type: 'heading', level: heading[1].length, children: parseInline(heading[2]) });
       continue;
     }
 
     const bullet = BULLET.exec(line);
     if (bullet) {
-      addItem(false, 1, bullet[2] as string, depthOf(bullet[1] as string));
+      addItem(false, 1, bullet[2], depthOf(bullet[1]));
       continue;
     }
 
     const numbered = NUMBERED.exec(line);
     if (numbered) {
-      addItem(true, Number(numbered[2]), numbered[3] as string, depthOf(numbered[1] as string));
+      addItem(true, Number(numbered[2]), numbered[3], depthOf(numbered[1]));
       continue;
     }
 
@@ -319,13 +319,13 @@ function listNode(doc: Document, block: Extract<MdBlock, { type: 'list' }>): Nod
       parent.appendChild(el);
       open[depth] = { el, ordered, last: null };
     }
-    const list = open[open.length - 1]!;
+    const list = open[open.length - 1];
     const li = doc.createElement('li');
     appendInline(doc, li, item);
     list.el.appendChild(li);
     list.last = li;
   });
-  return open[0]!.el;
+  return open[0].el;
 }
 
 /** Renders `markdown` into `el`, replacing what was there. Returns the cleanup that takes it out again. */

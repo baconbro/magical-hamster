@@ -144,21 +144,17 @@ function confirmInPage(preview: FirstWritePreview): Promise<boolean> {
   return new Promise((resolve) => {
     const veil = document.createElement('div');
     veil.id = 'confirm-write';
-    veil.style.cssText =
-      'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center';
     const box = document.createElement('div');
-    box.style.cssText =
-      'background:var(--background-primary);color:var(--text-normal);border:1px solid var(--background-modifier-border);border-radius:10px;padding:18px 20px;max-width:560px;font-size:14px';
+    box.className = 'confirm-box';
     const text = confirmWriteText(preview);
     const title = document.createElement('h3');
     title.textContent = text.title;
     const body = document.createElement('p');
     body.textContent = text.intro;
     const detail = document.createElement('pre');
-    detail.style.cssText = 'white-space:pre-wrap;font-size:12px;margin:8px 0';
     detail.textContent = text.rows.map((row) => `${row.label}: ${row.value}`).join('\n');
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end';
+    row.className = 'confirm-row';
     const finish = (answer: boolean) => {
       veil.remove();
       resolve(answer);

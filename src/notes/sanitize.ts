@@ -3,8 +3,17 @@ const DEFAULT_MAX_LENGTH = 60;
 const MAX_COLLISION_SUFFIX = 999;
 
 /* Illegal in a file name on macOS or Windows, or meaningful inside a wikilink. */
-const ILLEGAL = /[[\]#^|\/\\*?"<>]/g;
-const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g;
+const ILLEGAL = /[[\]#^|/\\*?"<>]/g;
+/** The text without C0 and C1 control characters (U+0000 to U+001F, U+007F to U+009F). */
+function withoutControlCharacters(text: string): string {
+  let out = '';
+  for (const ch of text) {
+    const code = ch.charCodeAt(0);
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) continue;
+    out += ch;
+  }
+  return out;
+}
 /* Half of a surrogate pair, left by a cut made elsewhere: it cannot be encoded in a file name.
    With the `u` flag this class leaves whole pairs alone. */
 const LONE_SURROGATE = /[\ud800-\udfff]/gu;
@@ -29,12 +38,8 @@ function cutAtWord(text: string, maxLen: number): string {
 /** A meeting title made safe for a file name and for the inside of a wikilink. */
 export function sanitizeTitle(title: string, maxLen: number = DEFAULT_MAX_LENGTH): string {
   const limit = Number.isFinite(maxLen) && maxLen >= 1 ? Math.floor(maxLen) : DEFAULT_MAX_LENGTH;
-  const clean = title
-    .replace(/:/g, '-')
-    .replace(ILLEGAL, '')
-    // Tabs and line breaks become spaces before the other control characters are dropped.
-    .replace(/\s+/g, ' ')
-    .replace(CONTROL, '')
+  // Tabs and line breaks become spaces before the other control characters are dropped.
+  const clean = withoutControlCharacters(title.replace(/:/g, '-').replace(ILLEGAL, '').replace(/\s+/g, ' '))
     .replace(LONE_SURROGATE, '')
     .replace(/ {2,}/g, ' ')
     .trim()

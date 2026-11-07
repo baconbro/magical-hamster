@@ -64,7 +64,7 @@ export default class MagicalHamsterPlugin extends Plugin {
   async onload(): Promise<void> {
     const { app } = this;
     const { vault, workspace } = app;
-    this.settings = withDefaults(await this.loadData());
+    this.settings = withDefaults((await this.loadData()) as Partial<HamsterSettings> | null);
     this.local = loadLocal(app);
 
     const locator = new DailyNoteLocator(app);
@@ -470,7 +470,7 @@ export default class MagicalHamsterPlugin extends Plugin {
   /** data.json changed on disk: another device synced its settings. */
   async onExternalSettingsChange(): Promise<void> {
     const previous = this.settings.ollamaUrl;
-    this.settings = withDefaults(await this.loadData());
+    this.settings = withDefaults((await this.loadData()) as Partial<HamsterSettings> | null);
     this.session?.handleSettingsChange();
     // Nobody at this computer chose the new address: it is said, and stays said until it is read.
     if (this.settings.ollamaUrl !== previous) this.warnOfRemoteOllama('synced');

@@ -18,8 +18,9 @@
  * element itself, which carries none.
  * ------------------------------------------------------------------------ */
 
-/* stylelint-disable at-rule-no-unknown -- @tailwind, @source, @custom-variant and @theme are
-   Tailwind's own directives, compiled away by the build: the released styles.css has none. */
+/* @tailwind, @source, @custom-variant and @theme are Tailwind's own directives, compiled away by
+   the build: the released styles.css has none. A CSS linter that does not know Tailwind reports
+   them as unknown at-rules. */
 
 @import "tailwindcss/theme.css";
 @import "./reset.css";

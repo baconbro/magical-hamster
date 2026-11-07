@@ -47,8 +47,6 @@ function createViewer() {
   let path: string | null = null;
   const pane = document.createElement('div');
   pane.id = 'note-view';
-  pane.style.cssText =
-    'display:none;flex:0 0 46%;min-height:0;flex-direction:column;border-top:1px solid var(--background-modifier-border)';
   const head = document.createElement('div');
   head.className = 'host-tabbar';
   const name = document.createElement('span');
@@ -57,13 +55,11 @@ function createViewer() {
   close.textContent = '×';
   close.addEventListener('click', () => {
     path = null;
-    pane.style.display = 'none';
+    pane.classList.remove('open');
   });
   head.append(name, close);
   const body = document.createElement('pre');
   body.id = 'note-view-text';
-  body.style.cssText =
-    'flex:1;min-height:0;overflow:auto;margin:0;padding:12px 18px;white-space:pre-wrap;font:12px/1.5 ui-monospace,Menlo,monospace';
   pane.append(head, body);
   document.querySelector('.host-main')?.append(pane);
   return {
@@ -72,7 +68,7 @@ function createViewer() {
       name.textContent = next;
       const shown = text ?? '(this note does not exist)';
       if (body.textContent !== shown) body.textContent = shown;
-      pane.style.display = 'flex';
+      pane.classList.add('open');
     },
     current: () => path,
   };
@@ -82,8 +78,6 @@ function toast(message: string): void {
   const el = document.createElement('div');
   el.className = 'harness-toast';
   el.textContent = message;
-  el.style.cssText =
-    'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:10001;max-width:70vw;padding:8px 14px;border-radius:8px;font-size:13px;background:var(--background-secondary);color:var(--text-normal);border:1px solid var(--background-modifier-border)';
   document.body.append(el);
   window.setTimeout(() => el.remove(), 6000);
 }
@@ -147,7 +141,7 @@ if (Number.isFinite(width) && width >= 200 && width <= 900) {
   if (pane) pane.style.width = `${width}px`;
 }
 
-if (params.get('bar') === '0' && bar) bar.style.display = 'none';
+if (params.get('bar') === '0' && bar) bar.classList.add('harness-hidden');
 
 const theme = params.get('theme');
 const themeSelect = document.getElementById('theme');

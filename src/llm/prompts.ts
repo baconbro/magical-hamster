@@ -162,7 +162,7 @@ function splitFigures(token: string): string {
  */
 export function keepTerms(text: string, opts: { loneDigits?: boolean } = {}): string[] {
   const tokens = joinFigures(plainLinks(text))
-    .split(/[\s,;:()\[\]"«»]+|->|=>/)
+    .split(/[\s,;:()[\]"«»]+|->|=>/)
     .filter(Boolean);
   const kept: string[] = [];
   tokens.forEach((raw, index) => {

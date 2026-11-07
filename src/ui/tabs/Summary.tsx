@@ -28,7 +28,7 @@ const STYLES: ReadonlyArray<{ value: SummaryStyle; label: string; title: string;
 ];
 
 function styleOf(value: SummaryStyle) {
-  return STYLES.find((s) => s.value === value) ?? STYLES[0]!;
+  return STYLES.find((s) => s.value === value) ?? STYLES[0];
 }
 
 export function SummaryTab() {

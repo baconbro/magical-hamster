@@ -412,7 +412,7 @@ export class VaultIndex {
     this.store = store;
     this.files = restored;
     this.folders = folders as string[];
-    this.model = parsed.model as string;
+    this.model = parsed.model;
   }
 
   private async runBuild(folders: string[], signal: AbortSignal): Promise<void> {

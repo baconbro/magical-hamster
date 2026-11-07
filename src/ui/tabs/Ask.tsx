@@ -10,7 +10,7 @@ import {
   TriangleAlert,
   X,
 } from 'lucide-react';
-import { memo, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState, type SubmitEvent, type KeyboardEvent } from 'react';
 import type { QaEntry, QuestionChip, SourceDoc } from '../../types.ts';
 import { fire } from '../components/fire.ts';
 import {
@@ -252,7 +252,7 @@ function Composer() {
     fire(controller.ask(question));
   };
 
-  const onSubmit = (event: FormEvent) => {
+  const onSubmit = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
     send();
   };

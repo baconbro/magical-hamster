@@ -119,7 +119,7 @@ const TurnBlock = memo(
     const end = Math.min(turns.length, start + BLOCK);
     const rows = [];
     for (let i = start; i < end; i++) {
-      const turn = turns[i] as Turn;
+      const turn = turns[i];
       rows.push(<TurnRow key={turn.id} turn={turn} micLabel={micLabel} />);
     }
     return <>{rows}</>;

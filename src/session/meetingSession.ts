@@ -1215,7 +1215,7 @@ class MeetingSession implements HamsterSession {
       text,
       opts,
       // Most days hold no such line at all: nothing to go through the note for.
-      own: text.includes(stem) ? ownLinks(text, anchors.map((anchor) => anchor.anchorLine), stem) : new Map(),
+      own: text.includes(stem) ? ownLinks(text, anchors.map((anchor) => anchor.anchorLine), stem) : new Map<number, string[]>(),
     };
     const found = new Map<number, string>();
     /** Notes that have their section. */

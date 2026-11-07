@@ -220,6 +220,16 @@
         border-top: 1px solid var(--background-modifier-border);
         border-left: 1px solid var(--background-modifier-border); border-top-left-radius: 6px;
       }
+      /* The harness's own pieces: the note viewer, the toasts, the first-write dialog. */
+      .harness-hidden { display: none !important; }
+      #note-view { display: none; flex: 0 0 46%; min-height: 0; flex-direction: column; border-top: 1px solid var(--background-modifier-border); }
+      #note-view.open { display: flex; }
+      #note-view-text { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 12px 18px; white-space: pre-wrap; font: 12px/1.5 Menlo, monospace; }
+      .harness-toast { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 10001; max-width: 70vw; padding: 8px 14px; border-radius: 8px; font-size: 13px; background: var(--background-secondary); color: var(--text-normal); border: 1px solid var(--background-modifier-border); }
+      #confirm-write { position: fixed; inset: 0; z-index: 10000; background: rgba(0, 0, 0, .45); display: flex; align-items: center; justify-content: center; }
+      #confirm-write .confirm-box { background: var(--background-primary); color: var(--text-normal); border: 1px solid var(--background-modifier-border); border-radius: 10px; padding: 18px 20px; max-width: 560px; font-size: 14px; }
+      #confirm-write pre { white-space: pre-wrap; font-size: 12px; margin: 8px 0; }
+      #confirm-write .confirm-row { display: flex; gap: 8px; justify-content: flex-end; }
     </style>
   </head>
   <body class="theme-dark t-dark">
