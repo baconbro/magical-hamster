@@ -3423,7 +3423,7 @@ describe('recording', () => {
     const before = env.world.notes.notices.length;
     await env.c.startRecording();
     env.world.sources[1].setState('not-installed');
-    assert.deepEqual(env.world.notes.notices.slice(before), ['Transcription is not installed on this Mac.']);
+    assert.deepEqual(env.world.notes.notices.slice(before), ['Transcription is not installed on this computer.']);
     assert.equal(env.world.notes.notices[before], STT_NOT_INSTALLED_FALLBACK);
   });
 

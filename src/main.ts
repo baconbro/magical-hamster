@@ -8,7 +8,7 @@ import { createCallLog, withCallLog, type CallLogWriter } from './llm/callLog.ts
 import { createNotesHost } from './host/notesHost.ts';
 import { showNotice } from './host/notice.ts';
 import { reloadBlocker, reloadPlugin, startSelfReload } from './host/selfReload.ts';
-import { defaultRuntimeDir, readRuntime, resolveRuntimeDir } from './host/runtime.ts';
+import { defaultRuntimeDir, readRuntime, resolveNodePath, resolveRuntimeDir } from './host/runtime.ts';
 import { createStatsIO } from './host/statsIO.ts';
 import { createVaultIndexIO } from './host/vaultIndexIO.ts';
 import { createOllamaClient } from './llm/ollama.ts';
@@ -99,9 +99,16 @@ export default class MagicalHamsterPlugin extends Plugin {
       companions,
     });
     /* The folder the setting stands for: the default when empty, the home
-       directory for a leading `~`. Resolved here and nowhere else, so that the
-       speech source, the stats file, the index and the settings tab agree. */
+       directory for a leading `~`, a relative folder taken from home. Resolved
+       here and nowhere else, so that the speech source, the stats file, the
+       index and the settings tab agree. The Node path is expanded the same way:
+       a `~` spawned as typed is a relative path that exists nowhere. */
     const runtimeDir = (): string => resolveRuntimeDir(this.local.runtimeDir);
+    const local = (): LocalSettings => ({
+      ...this.local,
+      runtimeDir: runtimeDir(),
+      nodePath: resolveNodePath(this.local.nodePath),
+    });
     /* Where the stats and the index are read and written until Obsidian starts
        again. The session loads both once, at start: following the setting
        while it is typed would create a folder for each character, and would
@@ -113,15 +120,15 @@ export default class MagicalHamsterPlugin extends Plugin {
     const session = createSession({
       settings: () => this.usableSettings(),
       updateSettings: (patch) => this.updateSettings(patch),
-      local: () => this.local,
+      local,
       setLocal: (patch) => this.setLocal(patch),
       notes,
       llm: withCallLog(createOllamaClient({ baseUrl: () => this.settings.ollamaUrl, clock }), callLog),
       createTranscriptSource: () =>
         createNodeTranscriptSource({
           clock,
-          // The source takes the folder as it is written: it gets the resolved one.
-          local: () => ({ ...this.local, runtimeDir: runtimeDir() }),
+          // The source takes the paths as they are written: it gets the resolved ones.
+          local,
           language: () => this.settings.sttLanguage,
         }),
       vaultIndexIO: createVaultIndexIO(app, () => ioDir),

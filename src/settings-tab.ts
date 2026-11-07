@@ -1,6 +1,8 @@
+import { isAbsolute } from 'node:path';
 import { PluginSettingTab, Setting, normalizePath } from 'obsidian';
 import type { App, DropdownComponent, Plugin, TextComponent } from 'obsidian';
 import { showNotice } from './host/notice.ts';
+import { isInside } from './host/runtime.ts';
 import { SETTING_RANGES, addressProblem, checkPrefix, softMarkerUnsupported } from './settings.ts';
 import type { NumberRule } from './settings.ts';
 export { checkPrefix } from './settings.ts';
@@ -56,6 +58,11 @@ const TOO_SLOW =
   'This pattern is too slow on a long line and would freeze typing. Avoid a repetition inside a repetition, such as (a+)+.';
 
 const OLLAMA_HERE = 'Where Ollama listens on this computer.';
+
+const RUNTIME_FOLDER_DESC =
+  'Holds the speech model, the knowledge index and the stats, outside the vault. Leave empty for the default. This device only. A new folder is used for speech at the next recording, and for the index and the stats the next time Obsidian starts. Nothing is copied into it.';
+const RUNTIME_IN_VAULT =
+  'This folder is inside the vault: the model, the index and the stats would be synced with your notes. Choose a folder outside it.';
 
 // Where Homebrew puts Node on Apple silicon: an example of what the field takes.
 const NODE_PATH_EXAMPLE = '/opt/homebrew/bin/node';
@@ -287,6 +294,27 @@ export function describeOllamaAddress(address: string): { text: string; warning:
     text: `${warning} The address is synced with the vault: every device that opens the vault sends them there too.`,
     warning: true,
   };
+}
+
+/**
+ * What to add under the runtime folder, or null when there is nothing to say:
+ * where a relative folder really is (`resolveRuntimeDir` takes it from the
+ * home folder, not from Obsidian's working directory), and that a folder
+ * inside the vault (`vaultBase`, where the adapter can say) would have the
+ * model, the index and the stats synced along with the notes. The setting is
+ * this device's own and never synced, so neither is a matter of trust: it is
+ * what the user would not expect.
+ */
+export function describeRuntimeFolder(typed: string, resolved: string, vaultBase: string | null): string | null {
+  const notes: string[] = [];
+  const folder = typed.trim();
+  // `~` and `~/…` are the home folder itself; anything else that is not absolute is taken from it.
+  if (folder !== '' && folder !== '~' && !folder.startsWith('~/') && !isAbsolute(folder)) {
+    notes.push(`A relative folder is taken from your home folder: ${resolved}.`);
+  }
+  const base = vaultBase?.trim() ?? '';
+  if (base !== '' && isInside(resolved, base)) notes.push(RUNTIME_IN_VAULT);
+  return notes.length === 0 ? null : notes.join(' ');
 }
 
 /**
@@ -586,13 +614,13 @@ export class HamsterSettingTab extends PluginSettingTab {
             },
           },
         ),
-        this.localText(
-          'Runtime folder',
-          'Holds the speech model, the knowledge index and the stats, outside the vault. Leave empty for the default. This device only. A new folder is used for speech at the next recording, and for the index and the stats the next time Obsidian starts. Nothing is copied into it.',
-          'runtimeDir',
-          () => this.deps.defaultRuntimeDir(),
-          { changed: () => this.showRuntime() },
-        ),
+        this.localText('Runtime folder', RUNTIME_FOLDER_DESC, 'runtimeDir', () => this.deps.defaultRuntimeDir(), {
+          changed: (setting) => {
+            this.showRuntime();
+            this.describeRuntimeFolder(setting);
+          },
+          drawn: (_field, setting) => this.describeRuntimeFolder(setting),
+        }),
         row('Speech runtime', 'Whether the speech model is installed in the runtime folder.', (setting) => {
           this.showRuntime = () => {
             const installed = this.installedRuntime();
@@ -796,7 +824,10 @@ export class HamsterSettingTab extends PluginSettingTab {
     desc: string,
     key: 'nodePath' | 'runtimeDir',
     placeholder: () => string,
-    { changed, drawn }: { changed?: () => void; drawn?: (field: TextComponent) => void } = {},
+    {
+      changed,
+      drawn,
+    }: { changed?: (setting: Setting) => void; drawn?: (field: TextComponent, setting: Setting) => void } = {},
   ): Row {
     return row(name, desc, (setting) => {
       setting.addText((field) => {
@@ -804,11 +835,24 @@ export class HamsterSettingTab extends PluginSettingTab {
         field.setPlaceholder(placeholder());
         field.onChange((raw) => {
           this.deps.setLocal({ [key]: raw.trim() });
-          changed?.();
+          changed?.(setting);
         });
-        drawn?.(field);
+        drawn?.(field, setting);
       });
     });
+  }
+
+  /** Under the runtime folder: where a relative one really is, and that one inside the vault would be synced. */
+  private describeRuntimeFolder(setting: Setting): void {
+    const note = describeRuntimeFolder(this.deps.local().runtimeDir, this.deps.runtimeDir(), this.vaultBase());
+    setting.setDesc(note === null ? RUNTIME_FOLDER_DESC : `${RUNTIME_FOLDER_DESC} ${note}`);
+    setting.descEl.toggleClass('mod-warning', note !== null);
+  }
+
+  /** The vault's own folder on disk, where the adapter can say so (feature-detected, as main.ts does). */
+  private vaultBase(): string | null {
+    const adapter = this.app.vault.adapter as { getBasePath?: () => string };
+    return adapter.getBasePath?.() ?? null;
   }
 
   private microphone(): Row {

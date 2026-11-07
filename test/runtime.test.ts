@@ -15,6 +15,7 @@ import {
   expandHome,
   parseRuntime,
   readRuntime,
+  resolveNodePath,
   resolveRuntimeDir,
   workerCommand,
 } from '../src/host/runtime.ts';
@@ -94,7 +95,25 @@ const INFO: RuntimeInfo = {
 };
 
 test('defaultRuntimeDir is the directory setup:stt installs into', () => {
-  assert.equal(defaultRuntimeDir(), join(homedir(), 'Library', 'Application Support', 'magical-hamster'));
+  assert.equal(defaultRuntimeDir(homedir(), 'darwin'), join(homedir(), 'Library', 'Application Support', 'magical-hamster'));
+  assert.equal(defaultRuntimeDir(homedir(), process.platform), defaultRuntimeDir(), 'this platform when none is named');
+});
+
+test('defaultRuntimeDir has a place on every desktop platform, since the stats and the index live there too', () => {
+  assert.equal(defaultRuntimeDir('/home/x', 'linux', {}), '/home/x/.local/share/magical-hamster');
+  assert.equal(defaultRuntimeDir('/home/x', 'linux', { XDG_DATA_HOME: '/data/x' }), '/data/x/magical-hamster');
+  assert.equal(defaultRuntimeDir('/home/x', 'linux', { XDG_DATA_HOME: '  ' }), '/home/x/.local/share/magical-hamster', 'blank is unset');
+  assert.equal(defaultRuntimeDir('/home/x', 'freebsd', {}), '/home/x/.local/share/magical-hamster');
+  assert.equal(
+    defaultRuntimeDir('C:\\Users\\x', 'win32', { APPDATA: 'C:\\Users\\x\\AppData\\Roaming' }),
+    'C:\\Users\\x\\AppData\\Roaming\\magical-hamster',
+  );
+  assert.equal(defaultRuntimeDir('C:\\Users\\x', 'win32', {}), 'C:\\Users\\x\\AppData\\Roaming\\magical-hamster');
+  assert.equal(
+    defaultRuntimeDir('/Users/x', 'darwin', { XDG_DATA_HOME: '/data/x', APPDATA: 'C:\\x' }),
+    '/Users/x/Library/Application Support/magical-hamster',
+    'a Mac ignores the other platforms’ variables',
+  );
 });
 
 test('expandHome replaces a leading ~ by the home directory', () => {
@@ -130,23 +149,44 @@ test('expandHome expands nothing when the home directory is unknown', () => {
 test('resolveRuntimeDir is the default directory for an empty setting', () => {
   assert.equal(resolveRuntimeDir(''), defaultRuntimeDir());
   assert.equal(resolveRuntimeDir('   '), defaultRuntimeDir());
-  assert.equal(resolveRuntimeDir('', '/Users/someone'), '/Users/someone/Library/Application Support/magical-hamster');
-  assert.equal(defaultRuntimeDir('/Users/someone'), '/Users/someone/Library/Application Support/magical-hamster');
+  assert.equal(resolveRuntimeDir('', '/Users/someone', 'darwin'), '/Users/someone/Library/Application Support/magical-hamster');
+  assert.equal(defaultRuntimeDir('/Users/someone', 'darwin'), '/Users/someone/Library/Application Support/magical-hamster');
+  assert.equal(resolveRuntimeDir('', '/home/x', 'linux', { XDG_DATA_HOME: '/data/x' }), '/data/x/magical-hamster');
 });
 
-test('resolveRuntimeDir expands a leading ~ and leaves other folders alone', () => {
+test('resolveRuntimeDir expands a leading ~ and leaves an absolute folder alone', () => {
   const home = '/Users/someone';
-  assert.equal(resolveRuntimeDir('~/hamster', home), '/Users/someone/hamster');
-  assert.equal(resolveRuntimeDir('  ~/hamster ', home), '/Users/someone/hamster', 'as typed, spaces around included');
-  assert.equal(resolveRuntimeDir('~', home), '/Users/someone');
-  assert.equal(resolveRuntimeDir('~someone/hamster', home), '~someone/hamster');
-  assert.equal(resolveRuntimeDir('/Volumes/Fast/hamster', home), '/Volumes/Fast/hamster');
+  assert.equal(resolveRuntimeDir('~/hamster', home, 'darwin'), '/Users/someone/hamster');
+  assert.equal(resolveRuntimeDir('  ~/hamster ', home, 'darwin'), '/Users/someone/hamster', 'as typed, spaces around included');
+  assert.equal(resolveRuntimeDir('~', home, 'darwin'), '/Users/someone');
+  assert.equal(resolveRuntimeDir('/Volumes/Fast/hamster', home, 'darwin'), '/Volumes/Fast/hamster');
   assert.equal(resolveRuntimeDir('~/hamster'), join(homedir(), 'hamster'), 'the real home when none is given');
   assert.equal(
-    resolveRuntimeDir('~/Library/Application Support/magical-hamster'),
-    defaultRuntimeDir(),
+    resolveRuntimeDir('~/Library/Application Support/magical-hamster', homedir(), 'darwin'),
+    defaultRuntimeDir(homedir(), 'darwin'),
     'the default, spelled the way the documentation spells it',
   );
+});
+
+test('resolveRuntimeDir takes a relative folder from the home directory, not from where Obsidian was started', () => {
+  const home = '/Users/x';
+  assert.equal(resolveRuntimeDir('hamster', home, 'darwin'), '/Users/x/hamster');
+  assert.equal(resolveRuntimeDir('./hamster', home, 'darwin'), '/Users/x/hamster');
+  assert.equal(resolveRuntimeDir('speech/runtime', home, 'darwin'), '/Users/x/speech/runtime');
+  // Another user's home is not ours to guess: it is a folder of that name, in ours.
+  assert.equal(resolveRuntimeDir('~someone/hamster', home, 'darwin'), '/Users/x/~someone/hamster');
+  assert.equal(resolveRuntimeDir('hamster', '', 'darwin'), 'hamster', 'nothing to take it from without a home');
+});
+
+test('resolveNodePath expands a leading ~ like the runtime folder, and keeps an empty setting empty', () => {
+  const home = '/Users/x';
+  assert.equal(resolveNodePath('~/bin/node', home), '/Users/x/bin/node');
+  assert.equal(resolveNodePath('~/.nvm/versions/node/v24.0.0/bin/node', home), '/Users/x/.nvm/versions/node/v24.0.0/bin/node');
+  assert.equal(resolveNodePath('  /opt/homebrew/bin/node ', home), '/opt/homebrew/bin/node');
+  assert.equal(resolveNodePath('node', home), 'node', 'a bare command is left to the PATH');
+  assert.equal(resolveNodePath('', home), '', 'empty means the Node the setup recorded');
+  assert.equal(resolveNodePath('   ', home), '');
+  assert.equal(resolveNodePath('~/bin/node'), join(homedir(), 'bin', 'node'), 'the real home when none is given');
 });
 
 test('parseRuntime accepts the record setup:stt writes and keeps what the plugin needs', () => {
@@ -165,6 +205,10 @@ test('parseRuntime rejects a record with a missing or unusable field', () => {
   }
   assert.equal(parseRuntime({ ...RECORD, node: '' }, RT), null, 'empty node');
   assert.equal(parseRuntime({ ...RECORD, node: '   ' }, RT), null, 'blank node');
+  // The installer writes the absolute path its self-test ran with; a relative one was edited in by hand.
+  assert.equal(parseRuntime({ ...RECORD, node: 'node' }, RT), null, 'relative node');
+  assert.equal(parseRuntime({ ...RECORD, node: 'bin/node' }, RT), null, 'relative node');
+  assert.equal(parseRuntime({ ...RECORD, node: '~/bin/node' }, RT), null, 'a ~ is not expanded here either');
   assert.equal(parseRuntime({ ...RECORD, modelDir: 42 }, RT), null, 'modelDir of the wrong type');
   assert.equal(parseRuntime({ ...RECORD, model: null }, RT), null, 'null model');
   assert.equal(parseRuntime({ ...RECORD, chunkMs: '560' }, RT), null, 'chunkMs as text');
@@ -257,6 +301,9 @@ test('workerCommand keeps the environment, minus what only Electron should see',
     PATH: '/usr/bin:/bin',
     HOME: '/Users/someone',
     ELECTRON_RUN_AS_NODE: '1',
+    ELECTRON_NO_ATTACH_CONSOLE: '1',
+    NODE_OPTIONS: '--require /tmp/hook.js',
+    NODE_PATH: '/tmp/modules',
     UNSET: undefined,
   };
   const snapshot = { ...baseEnv };
@@ -266,8 +313,9 @@ test('workerCommand keeps the environment, minus what only Electron should see',
     HOME: '/Users/someone',
     DYLD_LIBRARY_PATH: `${RT}/node_modules/sherpa-onnx-darwin-arm64`,
   });
-  assert.ok(!('ELECTRON_RUN_AS_NODE' in env));
-  assert.ok(!('UNSET' in env));
+  for (const key of ['ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ATTACH_CONSOLE', 'NODE_OPTIONS', 'NODE_PATH', 'UNSET']) {
+    assert.ok(!(key in env), key);
+  }
   assert.deepEqual(baseEnv, snapshot, 'the caller’s environment is not touched');
 });
 

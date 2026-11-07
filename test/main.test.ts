@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire, registerHooks } from 'node:module';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -323,6 +323,27 @@ describe('main: the runtime folder of the stats and the index', () => {
     // Before any save there is no folder to sweep and nothing to read: neither is an error.
     const fresh = await load(null, { runtimeDir: join(scratchDir(), 'fresh') });
     assert.equal(await fresh.session.deps.vaultIndexIO?.load(), null);
+  });
+});
+
+describe('main: the paths of this device, as the speech source gets them', () => {
+  it('expands a ~ in the Node path, which spawned as typed would be a relative path that exists nowhere', async () => {
+    const t = await load(null, { nodePath: '~/bin/node' });
+    assert.equal(t.session.deps.local().nodePath, join(homedir(), 'bin', 'node'));
+    assert.equal(t.tab.local().nodePath, '~/bin/node', 'the settings tab shows what was typed');
+
+    t.tab.setLocal({ nodePath: '' });
+    assert.equal(t.session.deps.local().nodePath, '', 'empty still means the Node the setup recorded');
+    t.tab.setLocal({ nodePath: '/opt/homebrew/bin/node' });
+    assert.equal(t.session.deps.local().nodePath, '/opt/homebrew/bin/node');
+  });
+
+  it('takes a relative runtime folder from the home directory, not from where Obsidian was started', async () => {
+    const t = await load(null, { runtimeDir: 'hamster-nowhere' });
+    assert.equal(t.session.deps.local().runtimeDir, join(homedir(), 'hamster-nowhere'));
+    assert.equal(t.tab.runtimeDir(), join(homedir(), 'hamster-nowhere'));
+    assert.equal(t.tab.local().runtimeDir, 'hamster-nowhere');
+    assert.equal(existsSync(join(homedir(), 'hamster-nowhere')), false, 'resolved, not created');
   });
 });
 

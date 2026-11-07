@@ -148,6 +148,7 @@ const {
   checkPrefix,
   checkSoftMarkerPattern,
   describeOllamaAddress,
+  describeRuntimeFolder,
   nodePathPlaceholder,
   parseFolderList,
   parseNumber,
@@ -1939,17 +1940,23 @@ describe('settings tab: the speech fields of this device', () => {
   interface Row {
     name: string;
     desc: string;
+    descEl: { classes: Set<string> };
     controls: Control[];
   }
 
   const HOME = '/Users/someone';
   const DEFAULT_DIR = `${HOME}/Library/Application Support/magical-hamster`;
 
-  /** The tab, drawn, over runtimes installed in the given directories (directory -> the Node its setup recorded). */
-  function open(installed: Record<string, string>, stored: Partial<typeof DEFAULT_LOCAL> = {}) {
+  /**
+   * The tab, drawn, over runtimes installed in the given directories (directory -> the Node its
+   * setup recorded). `vaultBase` is where the vault is on disk, when the adapter can say.
+   */
+  function open(installed: Record<string, string>, stored: Partial<typeof DEFAULT_LOCAL> = {}, vaultBase?: string) {
     let local = { ...DEFAULT_LOCAL, ...stored };
     const asked: string[] = [];
-    const tab = new HamsterSettingTab(new FakeApp().app, {} as ConstructorParameters<typeof HamsterSettingTab>[1], {
+    const fake = new FakeApp();
+    if (vaultBase !== undefined) Object.assign(fake.vault, { adapter: new obsidian.FileSystemAdapter(vaultBase) });
+    const tab = new HamsterSettingTab(fake.app, {} as ConstructorParameters<typeof HamsterSettingTab>[1], {
       settings: () => DEFAULT_SETTINGS,
       updateSettings: async () => undefined,
       local: () => local,
@@ -1958,7 +1965,7 @@ describe('settings tab: the speech fields of this device', () => {
       },
       defaultRuntimeDir: () => DEFAULT_DIR,
       // As in main.ts: one function resolves the folder, for the tab as for everything else.
-      runtimeDir: () => resolveRuntimeDir(local.runtimeDir, HOME),
+      runtimeDir: () => resolveRuntimeDir(local.runtimeDir, HOME, 'darwin'),
       readRuntime: (dir) => {
         asked.push(dir);
         return Object.hasOwn(installed, dir) ? { model: `model in ${dir}`, node: installed[dir] } : null;
@@ -2049,6 +2056,46 @@ describe('settings tab: the speech fields of this device', () => {
     assert.equal(tab.asked.at(-1), `${HOME}/hamster`);
     assert.equal(tab.status(), `Installed: model in ${HOME}/hamster`);
     assert.equal(tab.node().controls[0].placeholder, '/recorded/home/node');
+    assert.doesNotMatch(tab.folder().desc, /relative folder/);
+    assert.equal(tab.folder().descEl.classes.has('mod-warning'), false);
+  });
+
+  it('says under a relative runtime folder where it really is, and no longer once the folder is absolute', () => {
+    const tab = open({ [`${HOME}/hamster`]: '/recorded/home/node' });
+    const [folder] = tab.folder().controls;
+    const described = (): string => tab.folder().desc;
+    assert.match(described(), /Nothing is copied into it\.$/);
+    assert.equal(tab.folder().descEl.classes.has('mod-warning'), false);
+
+    folder.type('hamster');
+    assert.match(described(), /Nothing is copied into it\. A relative folder is taken from your home folder: \/Users\/someone\/hamster\.$/);
+    assert.equal(tab.folder().descEl.classes.has('mod-warning'), true);
+    assert.equal(tab.status(), `Installed: model in ${HOME}/hamster`, 'and that is where the runtime is looked for');
+
+    folder.type('/Volumes/Fast/hamster');
+    assert.match(described(), /Nothing is copied into it\.$/);
+    assert.equal(tab.folder().descEl.classes.has('mod-warning'), false);
+  });
+
+  it('warns under a runtime folder inside the vault, where the adapter can say where the vault is', () => {
+    const vault = `${HOME}/Vault`;
+    const tab = open({}, { runtimeDir: `${vault}/hamster` }, vault);
+    const warning = /This folder is inside the vault: the model, the index and the stats would be synced with your notes\. Choose a folder outside it\.$/;
+    assert.match(tab.folder().desc, warning, 'said as the tab is drawn');
+    assert.equal(tab.folder().descEl.classes.has('mod-warning'), true);
+
+    const [folder] = tab.folder().controls;
+    folder.type(`${vault}-old/hamster`);
+    assert.doesNotMatch(tab.folder().desc, /inside the vault/, 'a sibling whose name merely starts the same');
+    assert.equal(tab.folder().descEl.classes.has('mod-warning'), false);
+
+    folder.type('Vault/hamster');
+    assert.match(tab.folder().desc, /A relative folder is taken from your home folder: \/Users\/someone\/Vault\/hamster\. This folder is inside the vault/);
+    assert.equal(tab.folder().descEl.classes.has('mod-warning'), true);
+
+    // Without a base path (a vault that is not on disk) nothing can be said about it.
+    const elsewhere = open({}, { runtimeDir: `${vault}/hamster` });
+    assert.doesNotMatch(elsewhere.folder().desc, /inside the vault/);
   });
 
   it('treats a runtime that cannot be read as not installed', () => {
@@ -2070,6 +2117,49 @@ describe('settings tab: the speech fields of this device', () => {
     const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
     assert.match(rows.find((row) => row.name === 'Speech runtime')?.desc ?? '', /^Not installed\./);
     assert.equal(rows.find((row) => row.name === 'Node path')?.controls[0].placeholder, '/opt/homebrew/bin/node');
+  });
+});
+
+describe('settings tab: what is said under the runtime folder', () => {
+  const HOME = '/Users/someone';
+  const VAULT = `${HOME}/Vault`;
+  const RELATIVE = (resolved: string): string => `A relative folder is taken from your home folder: ${resolved}.`;
+  const IN_VAULT =
+    'This folder is inside the vault: the model, the index and the stats would be synced with your notes. Choose a folder outside it.';
+
+  it('says nothing for the default, a home folder or an absolute folder outside the vault', () => {
+    assert.equal(describeRuntimeFolder('', `${HOME}/Library/Application Support/magical-hamster`, VAULT), null);
+    assert.equal(describeRuntimeFolder('   ', `${HOME}/Library/Application Support/magical-hamster`, VAULT), null);
+    assert.equal(describeRuntimeFolder('~/hamster', `${HOME}/hamster`, VAULT), null);
+    assert.equal(describeRuntimeFolder('~', HOME, VAULT), null, 'the home folder itself is not inside the vault');
+    assert.equal(describeRuntimeFolder('/Volumes/Fast/hamster', '/Volumes/Fast/hamster', VAULT), null);
+    assert.equal(describeRuntimeFolder('/Volumes/Fast/hamster', '/Volumes/Fast/hamster', null), null);
+  });
+
+  it('says where a relative folder really is', () => {
+    assert.equal(describeRuntimeFolder('hamster', `${HOME}/hamster`, null), RELATIVE(`${HOME}/hamster`));
+    assert.equal(describeRuntimeFolder(' ./hamster ', `${HOME}/hamster`, null), RELATIVE(`${HOME}/hamster`));
+    assert.equal(describeRuntimeFolder('speech/runtime', `${HOME}/speech/runtime`, VAULT), RELATIVE(`${HOME}/speech/runtime`));
+    // Another user's home is not expanded: it is a folder of that name, in ours.
+    assert.equal(describeRuntimeFolder('~someone/x', `${HOME}/~someone/x`, null), RELATIVE(`${HOME}/~someone/x`));
+  });
+
+  it('warns of a folder inside the vault, the vault itself included, and not of a sibling', () => {
+    assert.equal(describeRuntimeFolder(`${VAULT}/hamster`, `${VAULT}/hamster`, VAULT), IN_VAULT);
+    assert.equal(describeRuntimeFolder(`${VAULT}/.obsidian/hamster`, `${VAULT}/.obsidian/hamster`, VAULT), IN_VAULT);
+    assert.equal(describeRuntimeFolder(VAULT, VAULT, VAULT), IN_VAULT);
+    assert.equal(describeRuntimeFolder(`~/Vault/hamster`, `${VAULT}/hamster`, VAULT), IN_VAULT, 'however it was spelled');
+    assert.equal(describeRuntimeFolder(`${VAULT}-old/hamster`, `${VAULT}-old/hamster`, VAULT), null);
+    assert.equal(describeRuntimeFolder(`${VAULT}/hamster`, `${VAULT}/hamster`, `${VAULT}/`), IN_VAULT, 'a base written with its slash');
+    assert.equal(describeRuntimeFolder(`${VAULT}/hamster`, `${VAULT}/hamster`, null), null, 'no base path, nothing to compare with');
+    assert.equal(describeRuntimeFolder(`${VAULT}/hamster`, `${VAULT}/hamster`, '  '), null);
+  });
+
+  it('says both when a relative folder lands inside the vault', () => {
+    assert.equal(
+      describeRuntimeFolder('Vault/hamster', `${VAULT}/hamster`, VAULT),
+      `${RELATIVE(`${VAULT}/hamster`)} ${IN_VAULT}`,
+    );
   });
 });
 

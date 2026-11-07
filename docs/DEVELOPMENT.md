@@ -104,7 +104,7 @@ test/                   unit tests; the adapters run against a stub of `obsidian
 | Origin of the plugin's own editor writes | `hamster` (`EDIT_ORIGIN`) |
 | Link line in the daily | `↳ [[Mtg-2026-10-09 — 1-1 Jane Example\|Meeting notes]]` |
 | Companion frontmatter key | `hamster_source: "<title>#<ordinal>"` |
-| Runtime directory | `~/Library/Application Support/magical-hamster/` |
+| Runtime directory | `~/Library/Application Support/magical-hamster/` on a Mac; `%APPDATA%\magical-hamster\` on Windows; `$XDG_DATA_HOME/magical-hamster/` (`~/.local/share/magical-hamster/`) elsewhere |
 | Setting that names another runtime directory | **Runtime folder**, as the settings tab and `pnpm setup:stt` both print it |
 | Installer's environment variables | `HAMSTER_VAULT`, `HAMSTER_CONFIG_DIR` |
 | Frame magic | `M`, `H` |

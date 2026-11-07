@@ -96,7 +96,7 @@ test('ask: no sentence promises that only the chosen folders are read', () => {
   );
   assert.equal(
     INDEX_SCOPE_TEXT,
-    'Besides this meeting and the notes linked in its section, answers only use the folders you choose. The index stays on this Mac.',
+    'Besides this meeting and the notes linked in its section, answers only use the folders you choose. The index stays on this computer.',
   );
 });
 

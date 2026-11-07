@@ -134,7 +134,7 @@ const NO_LINK_LINE = 'no line is added to the daily note';
 /* The words of the sidebar's banner for a source that gives no reason (STT_FAILED_FALLBACK and
    STT_NOT_INSTALLED_FALLBACK in ui/components/banner.ts). */
 const TRANSCRIPT_LOST = 'Transcription stopped. The recording continues without a transcript.';
-const TRANSCRIPT_NOT_INSTALLED = 'Transcription is not installed on this Mac.';
+const TRANSCRIPT_NOT_INSTALLED = 'Transcription is not installed on this computer.';
 /* The worker's queue is unbounded by design (protocol/segments.md): on a busy computer the
    transcript falls behind the room and catches up later. Said once per recording from this far
    behind, so that the user knows why the lines lag and what would shed the backlog. */
