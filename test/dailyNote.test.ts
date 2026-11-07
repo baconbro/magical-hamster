@@ -95,7 +95,7 @@ export class PluginSettingTab {
     this.containerEl = { rows: [], empty() { this.rows.length = 0; } };
   }
   hide() {}
-  // Obsidian's redraws the open tab from the definitions; the tests draw again with display().
+  // Obsidian redraws the open tab from the definitions after update(); the tests' drawTab does the same.
   update() {}
 }
 export class FileSystemAdapter {
@@ -128,6 +128,7 @@ const obsidian = (await import('obsidian')) as unknown as {
   FileSystemAdapter: new (basePath: string) => object;
   MarkdownView: new (file: { path: string } | null, editor: object) => object;
   editorInfoField: StateField<unknown>;
+  Setting: new (containerEl: object) => { setName(name: string): { setHeading(): unknown } };
 };
 const { liveCaptureExtension } = await import('../src/editor/liveCapture.ts');
 const { DEFAULT_DAILY_FORMAT, DailyNoteLocator, coreDailyEnabled, dailyPathFor, pickDailyConfig } = await import(
@@ -152,6 +153,20 @@ const {
   parseNumber,
   probeHeads,
 } = await import('../src/settings-tab.ts');
+
+/**
+ * Draws a settings tab the way Obsidian 1.13 does: update(), then a heading row per group of
+ * getSettingDefinitions() and each item rendered into a row of its own, in the stub's container.
+ */
+function drawTab(tab: InstanceType<typeof HamsterSettingTab>): void {
+  tab.update();
+  const containerEl = tab.containerEl as unknown as { empty(): void };
+  containerEl.empty();
+  for (const { heading, items } of tab.getSettingDefinitions()) {
+    new obsidian.Setting(containerEl).setName(heading).setHeading();
+    for (const item of items) item.render(new obsidian.Setting(containerEl) as never);
+  }
+}
 const { resolveRuntimeDir } = await import('../src/host/runtime.ts');
 
 type App = ConstructorParameters<typeof DailyNoteLocator>[0];
@@ -1772,7 +1787,7 @@ describe('settings tab: the speech fields of this device', () => {
         return Object.hasOwn(installed, dir) ? { model: `model in ${dir}`, node: installed[dir] } : null;
       },
     });
-    tab.display();
+    drawTab(tab);
     const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
     const row = (name: string): Row => {
       const found = rows.find((candidate) => candidate.name === name);
@@ -1874,7 +1889,7 @@ describe('settings tab: the speech fields of this device', () => {
         throw new Error('EACCES');
       },
     });
-    tab.display();
+    drawTab(tab);
     const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
     assert.match(rows.find((row) => row.name === 'Speech runtime')?.desc ?? '', /^Not installed\./);
     assert.equal(rows.find((row) => row.name === 'Node path')?.controls[0].placeholder, '/opt/homebrew/bin/node');
@@ -1918,7 +1933,7 @@ describe('settings tab: the Ollama address', () => {
       runtimeDir: () => '/runtime',
       readRuntime: () => null,
     });
-    tab.display();
+    drawTab(tab);
     const rows = (tab.containerEl as unknown as { rows: Row[] }).rows;
     const row = rows.find((candidate) => candidate.name === 'Ollama address');
     assert.ok(row, 'no setting named Ollama address');
@@ -1959,7 +1974,7 @@ describe('settings tab: the Ollama address', () => {
     }
   });
 
-  it('puts an address being typed into effect when a sync redraws the tab, as display() would', () => {
+  it('puts an address being typed into effect when a sync redraws the tab', () => {
     const t = open();
     try {
       t.field.type('http://192.168.1.50:11434');
@@ -1967,7 +1982,7 @@ describe('settings tab: the Ollama address', () => {
       // data.json changed on disk: Obsidian calls update(), then draws the rows again.
       t.tab.update();
       assert.deepEqual(t.saved, [{ ollamaUrl: 'http://192.168.1.50:11434' }], 'saved before the rows are drawn again');
-      t.tab.display();
+      drawTab(t.tab);
       const rows = (t.tab.containerEl as unknown as { rows: Row[] }).rows;
       const redrawn = rows.find((candidate) => candidate.name === 'Ollama address');
       assert.equal(redrawn?.controls[0].value, 'http://192.168.1.50:11434', 'the field shows the address in effect');
@@ -2084,7 +2099,7 @@ describe('settings tab: what the descriptions say', () => {
       runtimeDir: () => '/runtime',
       readRuntime: () => null,
     });
-    tab.display();
+    drawTab(tab);
     const rows = (tab.containerEl as unknown as { rows: Array<{ name: string; desc: string }> }).rows;
     return new Map(rows.map((row) => [row.name, row.desc]));
   }
@@ -2161,7 +2176,7 @@ describe('settings tab: the definitions Obsidian searches and draws', () => {
       }
     }
 
-    tab.display();
+    drawTab(tab);
     assert.deepEqual(
       rows.map((row) => row.name),
       definitions.flatMap((group) => [group.heading, ...group.items.map((item) => item.name)]),
@@ -2194,10 +2209,10 @@ describe('settings tab: the definitions Obsidian searches and draws', () => {
       return found;
     };
 
-    tab.display();
+    drawTab(tab);
     settings = { ...settings, llmModel: 'qwen3:8b' };
     tab.hide();
-    tab.display();
+    drawTab(tab);
     assert.equal(row('Model').controls[0].value, 'qwen3:8b');
 
     // The runtime folder updates the rows drawn last, not the ones drawn the first time.

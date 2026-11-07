@@ -359,8 +359,8 @@ function section(heading: string, items: Row[]): Section {
 }
 
 /**
- * A row that `draw` fills in. It names and describes the row itself:
- * Obsidian does so before `render`, `display()` does not.
+ * A row that `draw` fills in. It names and describes the row itself, as Obsidian also does before
+ * `render`: the row reads the same whoever draws it.
  */
 function row(name: string, desc: string, draw: (setting: Setting) => void): Row {
   return {
@@ -457,7 +457,7 @@ export class HamsterSettingTab extends PluginSettingTab {
         row(
           'Extra properties',
           "Added to the properties of each new companion note, one key: value per line, for example area: work. The plugin's own (type, date, tags, links and the like) stay as they are.",
-          (setting) =>
+          (setting) => {
             setting.addTextArea((area) => {
               area.setValue(this.deps.settings().companionProperties);
               area.setPlaceholder('area: work');
@@ -473,7 +473,8 @@ export class HamsterSettingTab extends PluginSettingTab {
                 setting.setErrorMessage(null);
                 this.saveSoon({ companionProperties: raw.trim() });
               });
-            }),
+            });
+          },
         ),
         this.choice(
           'Link placement',
@@ -510,13 +511,14 @@ export class HamsterSettingTab extends PluginSettingTab {
         row(
           'First-write confirmation',
           'Shown once on this device, before the first companion note is created.',
-          (setting) =>
+          (setting) => {
             setting.addButton((button) =>
               button.setButtonText('Ask again before the first write').onClick(() => {
                 this.deps.setLocal({ firstWriteConfirmed: false });
                 new Notice('Magical Hamster: The confirmation will be shown before the next first write.');
               }),
-            ),
+            );
+          },
         ),
       ]),
 
@@ -612,7 +614,7 @@ export class HamsterSettingTab extends PluginSettingTab {
         row(
           'Set up speech recognition',
           `Once, in Terminal (Applications, Utilities), with Node.js 20 or later installed. It downloads about 490 MB, the sherpa-onnx speech library from npm and the speech model from GitHub, into the runtime folder; run it again to repair or update. For a runtime folder of your own, add --runtime and the folder. The command (the button copies it): ${SPEECH_SETUP_COMMAND} (in Terminal).`,
-          (setting) =>
+          (setting) => {
             setting.addButton((button) => {
               button.setButtonText('Copy command').onClick(() => {
                 navigator.clipboard.writeText(SPEECH_SETUP_COMMAND).then(
@@ -620,7 +622,8 @@ export class HamsterSettingTab extends PluginSettingTab {
                   (error: unknown) => console.error('Magical Hamster: could not copy', error),
                 );
               });
-            }),
+            });
+          },
         ),
       ]),
 
@@ -628,12 +631,13 @@ export class HamsterSettingTab extends PluginSettingTab {
         row(
           'Indexed folders',
           'One folder per line. A single / is the whole vault. Press Rebuild index in the sidebar to apply.',
-          (setting) =>
+          (setting) => {
             setting.addTextArea((area) => {
               area.setValue(this.deps.settings().indexedFolders.join('\n'));
               area.inputEl.rows = 4;
               area.onChange((raw) => this.saveSoon({ indexedFolders: parseFolderList(raw) }));
-            }),
+            });
+          },
         ),
       ]),
 
@@ -650,11 +654,12 @@ export class HamsterSettingTab extends PluginSettingTab {
         row(
           'Show the debug tab',
           'A sidebar tab with every exchange with the model: what was sent and what came back. It holds your notes and transcript, is kept in memory only for the last 100 calls, and is gone when Obsidian closes. This computer only.',
-          (setting) =>
+          (setting) => {
             setting.addToggle((toggle) => {
               toggle.setValue(this.deps.local().debugTab);
               toggle.onChange((value) => this.deps.setLocal({ debugTab: value }));
-            }),
+            });
+          },
         ),
       ]),
     ];
@@ -663,17 +668,6 @@ export class HamsterSettingTab extends PluginSettingTab {
   /* Obsidian draws the tab from getSettingDefinitions(), and calls this only
      when that list is empty. The tests draw the tab here: the same rows, under
      the same headings. */
-  display(): void {
-    this.commit();
-    this.flush();
-    const { containerEl } = this;
-    containerEl.empty();
-    for (const { heading, items } of this.getSettingDefinitions()) {
-      new Setting(containerEl).setName(heading).setHeading();
-      for (const item of items) item.render(new Setting(containerEl));
-    }
-  }
-
   hide(): void {
     // A field edited just before closing must not lose its last characters.
     this.commit();
@@ -681,10 +675,10 @@ export class HamsterSettingTab extends PluginSettingTab {
     super.hide();
   }
 
-  /* Obsidian calls this when data.json changes on disk (a sync, an edit by hand) and redraws the
-     open tab from the definitions, without display(). What is being typed is put into effect
-     first, as display() does: otherwise the redrawn field shows the old value while the typed one
-     still waits to be saved. At load nothing is held or queued, and this saves nothing. */
+  /* Obsidian calls this when data.json changes on disk (a sync, an edit by hand), then redraws the
+     open tab from the definitions. What is being typed is put into effect first: otherwise the
+     redrawn field shows the old value while the typed one still waits to be saved. At load
+     nothing is held or queued, and this saves nothing. */
   update(): void {
     this.commit();
     this.flush();
@@ -774,12 +768,12 @@ export class HamsterSettingTab extends PluginSettingTab {
   }
 
   private toggle(name: string, desc: string, key: ToggleKey): Row {
-    return row(name, desc, (setting) =>
+    return row(name, desc, (setting) => {
       setting.addToggle((toggle) => {
         toggle.setValue(this.deps.settings()[key]);
         toggle.onChange((value) => this.saveNow({ [key]: value }));
-      }),
-    );
+      });
+    });
   }
 
   private choice<K extends ChoiceKey>(
@@ -788,15 +782,15 @@ export class HamsterSettingTab extends PluginSettingTab {
     key: K,
     options: Record<HamsterSettings[K], string>,
   ): Row {
-    return row(name, desc, (setting) =>
+    return row(name, desc, (setting) => {
       setting.addDropdown((dropdown) => {
         dropdown.addOptions(options);
         dropdown.setValue(this.deps.settings()[key]);
         dropdown.onChange((value) => {
           if (Object.hasOwn(options, value)) this.saveNow({ [key]: value });
         });
-      }),
-    );
+      });
+    });
   }
 
   /**
@@ -810,7 +804,7 @@ export class HamsterSettingTab extends PluginSettingTab {
     placeholder: () => string,
     { changed, drawn }: { changed?: () => void; drawn?: (field: TextComponent) => void } = {},
   ): Row {
-    return row(name, desc, (setting) =>
+    return row(name, desc, (setting) => {
       setting.addText((field) => {
         field.setValue(this.deps.local()[key]);
         field.setPlaceholder(placeholder());
@@ -819,12 +813,12 @@ export class HamsterSettingTab extends PluginSettingTab {
           changed?.();
         });
         drawn?.(field);
-      }),
-    );
+      });
+    });
   }
 
   private microphone(): Row {
-    return row('Microphone', 'This device only. Applies to the next recording.', (setting) =>
+    return row('Microphone', 'This device only. Applies to the next recording.', (setting) => {
       setting.addDropdown((dropdown) => {
         const saved = this.deps.local().micDeviceId;
         dropdown.addOption('', 'System default');
@@ -834,8 +828,8 @@ export class HamsterSettingTab extends PluginSettingTab {
         this.listMicrophones(dropdown, setting).catch((error: unknown) => {
           console.error('Magical Hamster: could not list the microphones', error);
         });
-      }),
-    );
+      });
+    });
   }
 
   private async listMicrophones(dropdown: DropdownComponent, setting: Setting): Promise<void> {
