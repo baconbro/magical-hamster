@@ -1,4 +1,4 @@
-import { MarkdownView, Notice } from 'obsidian';
+import { MarkdownView } from 'obsidian';
 import type { App, TFile, WorkspaceLeaf } from 'obsidian';
 import { insertDailyLink, insertNoteLink } from '../editor/dailyLink.ts';
 import type { DailyNoteLocator } from '../editor/dailyNote.ts';
@@ -11,9 +11,9 @@ import { softMarkerRegex } from '../settings.ts';
 import type { Entity, HamsterSettings, NotesHost } from '../types.ts';
 import { confirmWrite } from '../ui/ConfirmWriteModal.ts';
 import { truncate } from '../util/text.ts';
+import { showNotice } from './notice.ts';
 
 const MAX_LINKED_NOTES = 4;
-const NOTICE_PREFIX = 'Magical Hamster: ';
 
 export interface NotesHostDeps {
   settings(): HamsterSettings;
@@ -246,7 +246,7 @@ export function createNotesHost(app: App, deps: NotesHostDeps): NotesHost {
     openNote(path) {
       const file = target.file(path);
       if (!file) {
-        new Notice(`${NOTICE_PREFIX}${path} is no longer in the vault.`);
+        showNotice(`${path} is no longer in the vault.`);
         return;
       }
       open(file).catch((error: unknown) => {
@@ -255,7 +255,7 @@ export function createNotesHost(app: App, deps: NotesHostDeps): NotesHost {
     },
 
     notice(message, ms) {
-      new Notice(NOTICE_PREFIX + message, ms);
+      showNotice(message, ms);
     },
   };
 }

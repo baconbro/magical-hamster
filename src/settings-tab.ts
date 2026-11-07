@@ -1,5 +1,6 @@
-import { Notice, PluginSettingTab, Setting, normalizePath } from 'obsidian';
+import { PluginSettingTab, Setting, normalizePath } from 'obsidian';
 import type { App, DropdownComponent, Plugin, TextComponent } from 'obsidian';
+import { showNotice } from './host/notice.ts';
 import { softMarkerUnsupported } from './settings.ts';
 import { remoteHostWarning } from './util/loopback.ts';
 import type { HamsterSettings, LocalSettings } from './types.ts';
@@ -515,7 +516,7 @@ export class HamsterSettingTab extends PluginSettingTab {
             setting.addButton((button) =>
               button.setButtonText('Ask again before the first write').onClick(() => {
                 this.deps.setLocal({ firstWriteConfirmed: false });
-                new Notice('Magical Hamster: The confirmation will be shown before the next first write.');
+                showNotice('The confirmation will be shown before the next first write.');
               }),
             );
           },
@@ -618,7 +619,7 @@ export class HamsterSettingTab extends PluginSettingTab {
             setting.addButton((button) => {
               button.setButtonText('Copy command').onClick(() => {
                 navigator.clipboard.writeText(SPEECH_SETUP_COMMAND).then(
-                  () => new Notice('Setup command copied: paste it into Terminal.'),
+                  () => showNotice('Setup command copied: paste it into Terminal.'),
                   (error: unknown) => console.error('Magical Hamster: could not copy', error),
                 );
               });
@@ -901,7 +902,7 @@ export class HamsterSettingTab extends PluginSettingTab {
     if (Object.keys(patch).length === 0) return;
     this.deps.updateSettings(patch).catch((error: unknown) => {
       console.error('Magical Hamster: could not save the settings', error);
-      new Notice('Magical Hamster: The settings could not be saved.');
+      showNotice('The settings could not be saved.');
     });
   }
 }

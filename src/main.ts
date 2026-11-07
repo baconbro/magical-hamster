@@ -1,11 +1,12 @@
 import { join } from 'node:path';
-import { MarkdownView, Notice, Plugin, TFile } from 'obsidian';
+import { MarkdownView, Plugin, TFile } from 'obsidian';
 import type { Events, WorkspaceLeaf } from 'obsidian';
 import { DailyNoteLocator } from './editor/dailyNote.ts';
 import { liveCaptureExtension } from './editor/liveCapture.ts';
 import { loadLocal, saveLocal } from './host/localSettings.ts';
 import { createCallLog, withCallLog, type CallLogWriter } from './llm/callLog.ts';
 import { createNotesHost } from './host/notesHost.ts';
+import { showNotice } from './host/notice.ts';
 import { reloadBlocker, reloadPlugin, startSelfReload } from './host/selfReload.ts';
 import { defaultRuntimeDir, readRuntime, resolveRuntimeDir } from './host/runtime.ts';
 import { createStatsIO } from './host/statsIO.ts';
@@ -27,7 +28,6 @@ import { remoteHostWarning } from './util/loopback.ts';
 const DATE_CHECK_MS = 60_000;
 const QUIT_FLUSH_MS = 3000;
 const EDITOR_SECOND_LOOK_MS = 150;
-const NOTICE_PREFIX = 'Magical Hamster: ';
 const REMOTE_OLLAMA_NOTICE_MS = 15_000;
 const RELOAD_NOTICE_MS = 10_000;
 const PATTERN_NOTICE_MS = 15_000;
@@ -252,7 +252,7 @@ export default class MagicalHamsterPlugin extends Plugin {
       callback: () => {
         const on = !this.local.debugTab;
         this.setLocal({ debugTab: on });
-        new Notice(on ? 'Debug tab shown: exchanges with the model are kept in memory.' : 'Debug tab hidden; its log is cleared.');
+        showNotice(on ? 'Debug tab shown: exchanges with the model are kept in memory.' : 'Debug tab hidden; its log is cleared.');
       },
     });
     this.addCommand({
@@ -433,13 +433,13 @@ export default class MagicalHamsterPlugin extends Plugin {
         buildId,
         blocker: () => reloadBlocker(session.store.getState()),
         subscribe: (listener) => session.store.subscribe(listener),
-        notify: (message) => new Notice(message, RELOAD_NOTICE_MS),
+        notify: (message) => showNotice(message, RELOAD_NOTICE_MS),
         reload: () =>
           reloadPlugin({
             app: this.app,
             id: this.manifest.id,
             viewType: VIEW_TYPE,
-            notify: (message) => new Notice(`${NOTICE_PREFIX}${message}`),
+            notify: (message) => showNotice(message),
             // Everything written first; the unload then finds the session already closed.
             closeSession: () => session.dispose(),
           }),
@@ -515,8 +515,8 @@ export default class MagicalHamsterPlugin extends Plugin {
       (this.app.loadLocalStorage(CHECKED_PATTERN_KEY) !== source && checkSoftMarkerPattern(source) !== null);
     this.checkedPattern = { source, refused };
     if (refused) {
-      new Notice(
-        `${NOTICE_PREFIX}The pattern for meeting lines without a heading is empty, invalid or too slow, and is not used. Change it in the settings.`,
+      showNotice(
+        'The pattern for meeting lines without a heading is empty, invalid or too slow, and is not used. Change it in the settings.',
         PATTERN_NOTICE_MS,
       );
     } else {
@@ -530,13 +530,13 @@ export default class MagicalHamsterPlugin extends Plugin {
     const warning = remoteHostWarning(this.settings.ollamaUrl);
     if (warning === null) return;
     if (why === 'synced') {
-      new Notice(
-        `${NOTICE_PREFIX}The Ollama address changed with the settings synced from another device. ${warning} Change the address in the settings if that is not what you want.`,
+      showNotice(
+        `The Ollama address changed with the settings synced from another device. ${warning} Change the address in the settings if that is not what you want.`,
         0,
       );
       return;
     }
-    new Notice(`${NOTICE_PREFIX}${warning} The Ollama address is in the settings.`, REMOTE_OLLAMA_NOTICE_MS);
+    showNotice(`${warning} The Ollama address is in the settings.`, REMOTE_OLLAMA_NOTICE_MS);
   }
 
   private setLocal(patch: Partial<LocalSettings>): void {
