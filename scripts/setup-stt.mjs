@@ -474,8 +474,9 @@ say(`${nodePath}  (v${nodeInfo.version}, ${nodeInfo.platform} ${nodeInfo.arch})`
 if (nodeInfo.platform !== 'darwin' || nodeInfo.arch !== 'arm64') {
   fail(`the speech runtime is set up for Apple Silicon Macs (darwin arm64); this Node is ${nodeInfo.platform} ${nodeInfo.arch}.`);
 }
-if (!versionAtLeast(nodeInfo.version, [20])) {
-  fail(`Node 20 or later is needed; this is ${nodeInfo.version}.`);
+// 20 reached its end of life in April 2026: a current LTS (22 or 24) is what the worker is run with.
+if (!versionAtLeast(nodeInfo.version, [22])) {
+  fail(`Node 22 or later is needed; this is ${nodeInfo.version}.`);
 }
 
 step(`${SHERPA_PACKAGE} (the speech library)`);

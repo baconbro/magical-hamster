@@ -613,7 +613,7 @@ export class HamsterSettingTab extends PluginSettingTab {
         }),
         row(
           'Set up speech recognition',
-          `Once, in Terminal (Applications, Utilities), with Node.js 20 or later installed. It downloads about 490 MB, the sherpa-onnx speech library from npm and the speech model from GitHub, into the runtime folder; run it again to repair or update. For a runtime folder of your own, add --runtime and the folder. The command (the button copies it): ${SPEECH_SETUP_COMMAND} (in Terminal).`,
+          `Once, in Terminal (Applications, Utilities), with Node.js 22 or later installed. It downloads about 475 MB, the sherpa-onnx speech library from npm and the speech model from GitHub, into the runtime folder; run it again to repair or update. For a runtime folder of your own, add --runtime and the folder. The command (the button copies it): ${SPEECH_SETUP_COMMAND} (in Terminal).`,
           (setting) => {
             setting.addButton((button) => {
               button.setButtonText('Copy command').onClick(() => {

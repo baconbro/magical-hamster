@@ -4,7 +4,7 @@ Magical Hamster is an Obsidian plugin: a meeting assistant that listens through 
 
 ## Getting started
 
-Node 20 or later and pnpm. On a Mac with Apple silicon:
+Node 22.18 or later (the tests run TypeScript under `node --test`, which needs the type stripping Node turned on by default in 22.18; CI uses 24, see `.nvmrc`) and pnpm. On a Mac with Apple silicon:
 
 ```bash
 pnpm install

@@ -19,7 +19,7 @@ Everything runs on your own computer: the writing and retrieval models through [
 - **A Mac with Apple silicon** (M1 or later) for speech recognition. The plugin installs on any desktop, but transcription only runs on these Macs.
 - Obsidian 1.13 or later, desktop.
 - [Ollama](https://ollama.com), running. A Mac with 16 GB of memory or more is recommended for the default model.
-- [Node.js](https://nodejs.org) 20 or later (the LTS version), to run speech recognition. Obsidian cannot run it itself.
+- [Node.js](https://nodejs.org) 22 or later (a current LTS: 22 or 24), to run speech recognition. Obsidian cannot run it itself.
 
 ## Install
 
