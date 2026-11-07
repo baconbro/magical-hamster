@@ -317,7 +317,18 @@ const SUMMARY_TOKENS = 2000;
 const WINDOW_NOTE_TOKENS = 300;
 /** System text, task, tags and header, in tokens. */
 const PROMPT_OVERHEAD = 900;
-const MAX_SHORTHAND_CHARS = 12_000;
+/* The least the transcript, or the window notes, get: below it a summary is of the shorthand
+   alone. A small context cuts the shorthand down to leave this much, rather than overflow. */
+const MIN_ROOM = 1000;
+/** The most of the note-taker's own notes a summary or an answer carries. */
+export const MAX_SHORTHAND_CHARS = 12_000;
+/** The inverse of `estimateTokens`: characters per token. */
+const CHARS_PER_TOKEN = 3.3;
+
+/** The most characters a text may have for `estimateTokens` to stay within `tokens`, ellipsis included. */
+export function charsFor(tokens: number): number {
+  return Math.max(0, Math.floor(tokens * CHARS_PER_TOKEN) - 1);
+}
 
 export async function summarize(
   deps: SummaryDeps,
@@ -338,7 +349,14 @@ export async function summarize(
     mic: input.speakerLabels.mic.trim() || s.micLabel.trim() || 'Mic',
     system: input.speakerLabels.system.trim() || 'Others',
   };
-  const shorthand = truncate(notes.join('\n'), MAX_SHORTHAND_CHARS);
+  // What the context can hold besides the prompt, the shorthand and the answer. When that is less
+  // than MIN_ROOM, the shorthand is cut to leave it: the transcript is what the summary is of.
+  let shorthand = truncate(notes.join('\n'), MAX_SHORTHAND_CHARS);
+  let room = s.numCtx - SUMMARY_TOKENS - PROMPT_OVERHEAD - estimateTokens(shorthand);
+  if (room < MIN_ROOM) {
+    shorthand = truncate(shorthand, charsFor(s.numCtx - SUMMARY_TOKENS - PROMPT_OVERHEAD - MIN_ROOM));
+    room = MIN_ROOM;
+  }
   const base = {
     style: input.style,
     language,
@@ -359,11 +377,6 @@ export async function summarize(
   });
 
   const transcript = turns.map((t) => turnLine(t, labels)).join('\n');
-  // What the context can hold besides the prompt, the shorthand and the answer.
-  const room = Math.max(
-    1000,
-    s.numCtx - SUMMARY_TOKENS - PROMPT_OVERHEAD - estimateTokens(shorthand),
-  );
 
   // A long meeting is several calls. Between two of them the model is free for an instant: a live
   // request that took it then would be sent and dropped at once, at every window.
@@ -399,7 +412,7 @@ export async function summarize(
         if (text.trim()) collected.push(`[${range}]\n${text.trim()}`);
       }
       // A very long meeting: every window gives up the same share rather than the last ones being cut off.
-      const perWindow = Math.floor((room * 3.3) / Math.max(1, collected.length));
+      const perWindow = Math.floor((room * CHARS_PER_TOKEN) / Math.max(1, collected.length));
       const windowNotes =
         estimateTokens(collected.join('\n\n')) <= room
           ? collected.join('\n\n')

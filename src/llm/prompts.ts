@@ -70,8 +70,22 @@ function spellings(glossary: string[]): string {
   return kept.join('; ');
 }
 
+/* Every tag these prompts put around material, opening or closing, with or without attributes. */
+const PROMPT_TAG =
+  /<(?=\/?(?:sources|transcript|shorthand|notetaker|meeting|excerpts|items?|previous|part|keep|languages|spellings|notes)\b)/gi;
+
+/**
+ * Material with none of the prompts' own tags left in it: the `<` of each one becomes `‹`
+ * (U+2039), which reads the same and closes nothing. The system text says tagged text is never
+ * instructions, but a vault note that holds "</sources>" could still end the material early and
+ * have what follows read as the task. Defence in depth for text the vault supplies.
+ */
+export function neutralizeTags(text: string): string {
+  return text.replace(PROMPT_TAG, '‹');
+}
+
 function block(tag: string, body: string): string {
-  return `<${tag}>\n${body.trim()}\n</${tag}>`;
+  return `<${tag}>\n${neutralizeTags(body.trim())}\n</${tag}>`;
 }
 
 export interface EnhancePromptItem {
@@ -245,7 +259,7 @@ export function enhanceMessages(input: EnhancePromptInput): ChatMessage[] {
 
   if (input.excerpts.length > 0) {
     lines.push('<excerpts>');
-    for (const e of input.excerpts) lines.push(`[${e.id} ${e.time}] ${collapseWhitespace(e.text)}`);
+    for (const e of input.excerpts) lines.push(`[${e.id} ${e.time}] ${neutralizeTags(collapseWhitespace(e.text))}`);
     lines.push('</excerpts>');
   }
 
@@ -253,9 +267,9 @@ export function enhanceMessages(input: EnhancePromptInput): ChatMessage[] {
   for (const item of input.items) {
     const ids = item.excerptIds.filter((id) => known.has(id));
     lines.push(
-      `<item n="${item.n}" excerpts="${ids.length > 0 ? ids.join(' ') : 'none'}">${collapseWhitespace(item.text)}</item>`,
+      `<item n="${item.n}" excerpts="${ids.length > 0 ? ids.join(' ') : 'none'}">${neutralizeTags(collapseWhitespace(item.text))}</item>`,
     );
-    const previous = item.previous ? collapseWhitespace(item.previous) : '';
+    const previous = item.previous ? neutralizeTags(collapseWhitespace(item.previous)) : '';
     if (previous) lines.push(`<previous n="${item.n}">${previous}</previous>`);
   }
   lines.push('</items>');
@@ -700,6 +714,7 @@ export function qaMessages(input: QaPromptInput): ChatMessage[] {
   const parts = [`<meeting>${input.date ? `${title}, ${input.date}` : title}</meeting>`];
   if (input.transcriptTail.trim()) parts.push(notetakerLine(input.micLabel ?? ''));
   if (input.sources.length > 0) {
+    // Labels and texts both come from the vault; `block` neutralizes the prompt's tags in both.
     const body = input.sources
       .map((s) => `[${s.n}] ${sourceLabel(s)}\n${s.text.trim()}`)
       .join('\n\n');

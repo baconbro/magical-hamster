@@ -326,13 +326,20 @@ function linkText(inner: string, embed: boolean): string {
    different character, so nothing here can be matched two ways. */
 const MARKDOWN_LINK = /(!?)\[((?:[^[\]\n]|\[[^[\]\n]*\])*)\]\(((?:[^()\n]|\([^()\n]*\))*)\)/g;
 const LINK_TITLE = /[ \t]+(?:"[^"]*"|'[^']*'|\([^()]*\))$/;
-const URL_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+/* The schemes a link the model wrote may keep: nothing fetches a web or a mail address until it is
+   clicked, and the address shows on hover. Any other scheme is a command behind a label: a source
+   can plant `obsidian://` (which runs one) or `file:` (which opens a path) under innocent text. */
+const SAFE_SCHEME = /^(?:https?|mailto):/i;
 
-/** True for a link Obsidian resolves to a file of the vault: no scheme, and not a heading of the note itself. */
-function pointsToNote(inside: string): boolean {
+/**
+ * True for a Markdown link that stays as written: empty, to a heading of the note itself, or to a
+ * web or mail address. A target with no scheme is a file of the vault, which Obsidian resolves like
+ * a wikilink and would put the note in backlinks; one with another scheme is reduced with it.
+ */
+function keepsLink(inside: string): boolean {
   let target = inside.trim().replace(LINK_TITLE, '').trim();
   if (target.startsWith('<') && target.endsWith('>')) target = target.slice(1, -1).trim();
-  return target !== '' && !target.startsWith('#') && !URL_SCHEME.test(target);
+  return target === '' || target.startsWith('#') || SAFE_SCHEME.test(target);
 }
 
 /* `[`config.md`](40 Resources/config.md)`: the label holds a code span, so the pass that works
@@ -342,7 +349,7 @@ const CODE_LABEL_LINK = /(!?)\[((?:[^\]\n`\\]|\\.)*`[^`\n]*`(?:[^\]\n`\\]|\\.|`[
 function unlinkCodeLabels(line: string): string {
   if (!line.includes('](') || !line.includes('`')) return line;
   return line.replace(CODE_LABEL_LINK, (match, _bang: string, shown: string, inside: string) =>
-    pointsToNote(inside) ? shown : match,
+    keepsLink(inside) ? match : shown,
   );
 }
 
@@ -352,9 +359,10 @@ function unlink(text: string): string {
   for (;;) {
     const next = current
       .replace(WIKILINK, (_match, bang: string, inner: string) => linkText(inner, bang === '!'))
-      // A Markdown link to a note is indexed like a wikilink: it would put the note in backlinks.
+      // A Markdown link to a note is indexed like a wikilink; one with a scheme that is not the
+      // web's or mail's is a command. Either is reduced to its text.
       .replace(MARKDOWN_LINK, (match, _bang: string, shown: string, inside: string) =>
-        pointsToNote(inside) ? shown : match,
+        keepsLink(inside) ? match : shown,
       );
     if (next === current) return current;
     current = next;

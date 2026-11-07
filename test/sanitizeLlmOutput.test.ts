@@ -107,12 +107,21 @@ describe('Markdown links to notes', () => {
   it('leaves links to the web, to a heading of the note itself, and what is no link', () => {
     for (const text of [
       'See [the doc](https://example.com/a_(b)) or [write](mailto:jane@example.com).',
-      'Back to [the decisions](#Decisions) and [the vault](obsidian://open?vault=Work&file=Plan).',
+      'Or [plain](http://example.com) and [shouted](HTTPS://EXAMPLE.COM) with [a title](https://example.com "Example").',
+      'Back to [the decisions](#Decisions).',
       'An empty one [x]() and a citation [1] (Budget 2026).',
       'Use `[Jane](Jane.md)` to link by hand.',
     ]) {
       assert.equal(sanitizeLlmOutput(text), text);
     }
+  });
+
+  it('reduces a link with any other scheme to its text', () => {
+    // A source can plant a command under an innocent label: obsidian:// runs one, file: opens a path.
+    assert.equal(sanitizeLlmOutput('Back to [the vault](obsidian://open?vault=Work&file=Plan).'), 'Back to the vault.');
+    assert.equal(sanitizeLlmOutput('[x](file:///etc/passwd)'), 'x');
+    assert.equal(sanitizeLlmOutput('[x](<javascript:alert(1)>) and [`cfg`](obsidian://open?file=cfg "Config")'), 'x and `cfg`');
+    assert.equal(sanitizeLlmOutput('![shown](data:image/png;base64,AAAA)'), 'shown');
   });
 
   it('keeps them when wikilinks are kept', () => {

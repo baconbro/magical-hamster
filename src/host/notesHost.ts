@@ -6,7 +6,7 @@ import { entityNames, parseEntities } from '../editor/entities.ts';
 import { readCompanionKeys, regionSkeleton } from '../notes/companion.ts';
 import type { CompanionStore } from '../notes/companionStore.ts';
 import type { TextTarget } from '../notes/textTarget.ts';
-import { stripFrontmatter } from '../rag/chunk.ts';
+import { headingTitle, stripFrontmatter } from '../rag/chunk.ts';
 import { softMarkerRegex } from '../settings.ts';
 import type { Entity, HamsterSettings, NotesHost } from '../types.ts';
 import { confirmWrite } from '../ui/ConfirmWriteModal.ts';
@@ -59,8 +59,7 @@ export function stripLinkedMentions(markdown: string): string {
       const level = heading[1].length;
       if (skipping && level > skipping) continue;
       skipping = 0;
-      const title = (heading[2] ?? '')
-        .replace(/[ \t]+#+[ \t]*$/, '')
+      const title = headingTitle(heading[2] ?? '')
         .replace(/[*_`]/g, '')
         .trim();
       if (/^linked mentions:?$/i.test(title)) {

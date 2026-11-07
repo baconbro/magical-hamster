@@ -49,7 +49,7 @@ import type { SectionOptions } from '../editor/sectionAt.ts';
 import { EnhanceEngine, cleanBullet } from '../llm/enhance.ts';
 import type { EnhanceEngineDeps } from '../llm/enhance.ts';
 import { modelInstalled } from '../llm/ollama.ts';
-import { answerQuestion, buildSources, citedSources, formatInsight, lastSentence, questionsIn } from '../llm/qa.ts';
+import { answerQuestion, buildSources, citedSources, formatInsight, lastSentence, qaSourceBudget, questionsIn } from '../llm/qa.ts';
 import { LlmQueue } from '../llm/queue.ts';
 import { summarize as writeSummary } from '../llm/summary.ts';
 import type { GenSettings } from '../llm/summary.ts';
@@ -97,7 +97,6 @@ const GLOSSARY_SIZE = 60;
 const ENHANCE_EXCERPTS = 3;
 const QA_VAULT_CHUNKS = 8;
 const QA_TRANSCRIPT_CHUNKS = 4;
-const QA_SOURCE_TOKENS = 6000;
 const QA_LINKED_CHARS = 2500;
 const QA_TAIL_SECONDS = 900;
 const QA_TAIL_TOKENS = 3000;
@@ -3621,9 +3620,16 @@ class MeetingSession implements HamsterSession {
         this.transcriptExcerpts(text, meeting, run.abort.signal),
       ]);
       if (!live()) return;
-      run.sources = buildSources({ linked, vault, transcript, maxTokens: QA_SOURCE_TOKENS });
-
       const now = this.state;
+      // Outside a meeting the question is about the vault, not about the section under the cursor.
+      const shorthand = meeting ? now.shorthand.map((item) => item.text) : [];
+      run.sources = buildSources({
+        linked,
+        vault,
+        transcript,
+        maxTokens: qaSourceBudget(this.genSettings().numCtx, text, shorthand.join('\n')),
+      });
+
       const answered = await answerQuestion(
         {
           llm: this.deps.llm,
@@ -3635,8 +3641,7 @@ class MeetingSession implements HamsterSession {
           question: text,
           title: meeting?.title ?? '',
           date: meeting?.date ?? now.daily.date,
-          // Outside a meeting the question is about the vault, not about the section under the cursor.
-          shorthand: meeting ? now.shorthand.map((item) => item.text) : [],
+          shorthand,
           transcriptTail: meeting ? this.transcriptTail() : '',
           sources: run.sources,
         },

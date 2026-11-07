@@ -116,7 +116,7 @@ test/                   unit tests; the adapters run against a stub of `obsidian
 3. Companion writes only touch the text between a region's markers, and the `updated` date in the frontmatter. A damaged marker pair means the write is skipped, never repaired.
 4. No Vault API write to a file within 2.5 s of an edit in an editor: Obsidian saves 2 s after the last change and the later write wins.
 5. No wikilinks and no `- [ ]` checkboxes in generated text by default: both are indexed by other tooling in the vault.
-6. Generated text is saved inert: no image, no HTML tag, no code block or inline query that another plugin would run.
+6. Generated text is saved inert: no image, no HTML tag, no code block or inline query that another plugin would run. Links to http(s) and mailto addresses written by the model are kept: nothing fetches them until clicked. Links with any other scheme (`obsidian://`, `file:`) are reduced to their text.
 7. Models, the speech runtime, the index, stats and bench audio live outside the vault.
 8. Meeting content goes to the Ollama address and nowhere else. When that address is not this computer, the user is told (see below).
 

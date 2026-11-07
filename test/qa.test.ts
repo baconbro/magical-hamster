@@ -19,6 +19,7 @@ import {
   formatInsight,
   lastSentence,
   looksLikeQuestion,
+  qaSourceBudget,
   questionLanguage,
   questionsIn,
   sentencesOf,
@@ -390,6 +391,24 @@ describe('buildSources', () => {
   });
 });
 
+describe('qaSourceBudget', () => {
+  const q = 'When does the migration end?';
+
+  it('gives the sources 6,000 tokens when the context has them to spare', () => {
+    assert.equal(qaSourceBudget(16384, q, 'migration march\nvendor quote sso'), 6000);
+    assert.equal(qaSourceBudget(16384, q, ''), 6000);
+  });
+
+  it('follows the context down, and never below 500 tokens', () => {
+    const small = qaSourceBudget(6144, q, 'migration march');
+    assert.ok(small < 6000 && small > 500, `${small} tokens at 6,144`);
+    assert.ok(qaSourceBudget(6144, q, 'x'.repeat(12_000)) < small, 'a long shorthand leaves the sources less');
+    // At the smallest setting a 12,000-character shorthand leaves nothing: the sources keep their floor.
+    assert.equal(qaSourceBudget(4096, q, 'x'.repeat(12_000)), 500);
+    assert.ok(qaSourceBudget(4096, q, '') >= 500);
+  });
+});
+
 describe('citedSources', () => {
   it('returns the sources the answer cites, in source order', () => {
     assert.deepEqual(
@@ -571,6 +590,37 @@ describe('answerQuestion', () => {
     const kept = /<transcript>\n([\s\S]*)\n<\/transcript>/.exec(user);
     assert.ok(kept);
     assert.ok(kept[1].split('\n').every((line) => /^\[\d+:00\] Alex: line number \d+ of the meeting$/.test(line)));
+  });
+
+  it('cuts the shorthand to what the context leaves beside the sources', async () => {
+    // 400 lines of notes, over 12,000 characters: more than a 4,096 context holds beside the answer.
+    const notes = Array.from({ length: 400 }, (_unused, i) => `line ${i} budget iam fin oct, vendor quote sso`);
+    assert.ok(notes.join('\n').length >= 12_000);
+    const t = setup({ numCtx: 4096 });
+    const budget = qaSourceBudget(4096, 'When does the migration end?', notes.join('\n'));
+    assert.equal(budget, 500);
+    await answerQuestion(t.deps, question({ shorthand: notes }), t.onText);
+    const req = t.llm.requests[0];
+    const total = req.messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
+    assert.ok(total <= 4096 - 400, `prompt of ${total} tokens fits beside the answer`);
+    const user = userOf(req);
+    assert.ok(user.includes('<shorthand>\nline 0 budget iam fin oct, vendor quote sso\n'));
+    assert.equal(user.includes('line 399 budget'), false);
+    // The sources and the question are still there, in full.
+    assert.ok(user.includes('[1] IAM roadmap\nThe migration ends in March.'));
+    assert.ok(user.endsWith('Question: When does the migration end?'));
+  });
+
+  it('carries at most 12,000 characters of shorthand, whatever the context', async () => {
+    const notes = Array.from({ length: 800 }, (_unused, i) => `line ${i} vendor quote sso, budget iam fin oct`);
+    assert.ok(notes.join('\n').length >= 20_000);
+    const t = setup();
+    await answerQuestion(t.deps, question({ shorthand: notes }), t.onText);
+    const block = /<shorthand>\n([\s\S]*)\n<\/shorthand>/.exec(userOf(t.llm.requests[0]));
+    assert.ok(block);
+    assert.ok(block[1].length <= 12_001, `${block[1].length} characters`);
+    assert.ok(block[1].endsWith('…'));
+    assert.ok(block[1].startsWith('line 0 vendor quote sso, budget iam fin oct\n'));
   });
 
   it('rejects at once when the caller aborts', async () => {

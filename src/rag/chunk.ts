@@ -169,12 +169,25 @@ function cleanLines(markdown: string): Line[] {
   return out;
 }
 
+/**
+ * A heading's text without its closing run of hashes: "Title ##" is "Title", "C#" keeps its hash
+ * (the run counts only when a blank sets it off, or when it is all there is). Read from the end
+ * with no pattern: a pattern for a run at the end of a line tries the run again from each of its
+ * characters, and a heading with thousands of blanks inside took a fifth of a second.
+ */
+export function headingTitle(raw: string): string {
+  const text = raw.trimEnd();
+  let at = text.length;
+  while (at > 0 && text[at - 1] === '#') at -= 1;
+  const closing = at < text.length && (at === 0 || text[at - 1] === ' ' || text[at - 1] === '\t');
+  return (closing ? text.slice(0, at) : text).trim();
+}
+
 function parseHeading(line: string): { level: number; text: string } | null {
   // Whitespace after the hashes is required: `#tag` is a tag, not a heading.
   const match = /^ {0,3}(#{1,6})(?:[ \t]+(.*))?$/.exec(line);
   if (!match) return null;
-  const text = (match[2] ?? '').replace(/(?:^|[ \t]+)#+[ \t]*$/, '').trim();
-  return { level: match[1].length, text };
+  return { level: match[1].length, text: headingTitle(match[2] ?? '') };
 }
 
 function isLinkedMentions(heading: string): boolean {

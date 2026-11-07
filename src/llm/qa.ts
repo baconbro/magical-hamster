@@ -10,7 +10,7 @@ import type {
 import { detectLang, shorthandLang } from '../util/lang.ts';
 import { collapseWhitespace, estimateTokens, truncate } from '../util/text.ts';
 import { plainLinks, qaMessages, sourceLabel } from './prompts.ts';
-import { GEN_OPTIONS, generate } from './summary.ts';
+import { GEN_OPTIONS, MAX_SHORTHAND_CHARS, charsFor, generate } from './summary.ts';
 import type { GenSettings } from './summary.ts';
 
 const WORD_CHAR = /[\p{L}\p{N}]/u;
@@ -327,6 +327,30 @@ export interface QaInput {
 const ANSWER_TOKENS = 400;
 /** System text, tags and source headers, in tokens. */
 const PROMPT_OVERHEAD = 700;
+/* The most the sources of one answer take: eight vault chunks and four excerpts fit well under
+   it. The least they get: below it the answer would come from the shorthand alone, so a small
+   context cuts the shorthand down to leave this much. */
+const QA_SOURCE_TOKENS = 6000;
+const MIN_SOURCE_TOKENS = 500;
+
+/* The shorthand as the answer carries it: at most MAX_SHORTHAND_CHARS, and less when the context
+   would otherwise leave the sources under MIN_SOURCE_TOKENS. */
+function fitShorthand(numCtx: number, question: string, shorthand: string): string {
+  const text = truncate(shorthand, MAX_SHORTHAND_CHARS);
+  const room = numCtx - ANSWER_TOKENS - PROMPT_OVERHEAD - estimateTokens(question) - MIN_SOURCE_TOKENS;
+  return estimateTokens(text) <= room ? text : truncate(text, charsFor(room));
+}
+
+/**
+ * Tokens the sources of one answer may take: what the context leaves beside the answer, the
+ * question and the shorthand as `answerQuestion` sends them, within QA_SOURCE_TOKENS and never
+ * under MIN_SOURCE_TOKENS. The budgets follow `numCtx`: at its smallest setting, a fixed 6,000
+ * would overflow the context on its own.
+ */
+export function qaSourceBudget(numCtx: number, question: string, shorthand: string): number {
+  const used = estimateTokens(question) + estimateTokens(fitShorthand(numCtx, question, shorthand));
+  return Math.max(MIN_SOURCE_TOKENS, Math.min(QA_SOURCE_TOKENS, numCtx - ANSWER_TOKENS - PROMPT_OVERHEAD - used));
+}
 
 /** The newest lines that fit: the end of the transcript is where the question came from. */
 function keepTail(text: string, maxTokens: number): string {
@@ -388,7 +412,7 @@ export async function answerQuestion(
      tell, the model is asked to answer in the question's own language rather than in the
      language of the notes, which was wrong for one short question in three. */
   const language: Lang | null = questionLanguage(input.question);
-  const shorthand = notes.join('\n');
+  const shorthand = fitShorthand(s.numCtx, input.question, notes.join('\n'));
 
   const used =
     estimateTokens(shorthand) +
