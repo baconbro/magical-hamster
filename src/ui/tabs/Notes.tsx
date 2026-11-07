@@ -111,7 +111,7 @@ function EnhancedPane() {
       <div data-mh-scroll="" className="min-h-0 flex-1 overflow-y-auto px-3 pb-2.5">
         {items.length === 0 ? (
           <p className="py-2 text-xs leading-relaxed text-muted">
-            Nothing enhanced yet. Press Enhance, or turn on Live Enhance to have it done as you type.
+            Nothing enhanced yet. Press Enhance, or turn on live enhance to have it done as you type.
           </p>
         ) : (
           items.map((item) => <EnhancedRow key={item.id} item={item} />)

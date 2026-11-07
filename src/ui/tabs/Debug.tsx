@@ -47,7 +47,7 @@ export function DebugTab() {
 
 const PURPOSE: Record<string, string> = {
   enhance: 'Enhance',
-  live: 'Live Enhance',
+  live: 'Live enhance',
   'summary-window': 'Summary, one window',
   summary: 'Summary',
   actions: 'Action items',

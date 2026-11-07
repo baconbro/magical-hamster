@@ -307,13 +307,13 @@ export function checkPrefix(prefix: string): string | null {
   return null;
 }
 
-/** Folders as typed, one per line: trimmed, without outer slashes, without duplicates. `/` is the whole vault. */
+/** Folders as typed, one per line: as vault paths (Obsidian's normalizePath), without duplicates. `/` is the whole vault. */
 export function parseFolderList(text: string): string[] {
   const folders: string[] = [];
   for (const line of text.split('\n')) {
     const raw = line.trim();
     if (raw === '') continue;
-    const folder = raw.replace(/^\/+|\/+$/g, '') || '/';
+    const folder = normalizePath(raw);
     if (!folders.includes(folder)) folders.push(folder);
   }
   return folders;
@@ -361,7 +361,7 @@ export class HamsterSettingTab extends PluginSettingTab {
       (raw) => (raw.trim() === '' ? { error: 'Enter a model name, such as gemma4:12b' } : { value: raw.trim() }),
     );
     this.text(
-      'Live Enhance model',
+      'Live enhance model',
       'Leave empty to use the same model. A second model takes memory of its own.',
       'liveModel',
       (raw) => ({ value: raw.trim() }),
@@ -480,19 +480,19 @@ export class HamsterSettingTab extends PluginSettingTab {
       { standard: 'Standard', concise: 'Concise' },
     );
     this.toggle(
-      'Live Enhance on at start',
+      'Live enhance on at start',
       'Applies the next time Obsidian starts. The sidebar turns it on and off at any time.',
       'liveEnhanceDefault',
     );
     this.number(
       'Typing pause',
-      'Milliseconds without typing before Live Enhance runs.',
+      'Milliseconds without typing before live enhance runs.',
       'enhanceDebounceMs',
       { min: 200, max: 60000, integer: true },
     );
     this.number(
       'Longest wait',
-      'Milliseconds after which Live Enhance runs even while typing continues.',
+      'Milliseconds after which live enhance runs even while typing continues.',
       'enhanceMaxWaitMs',
       { min: 500, max: 300000, integer: true },
     );
@@ -588,7 +588,7 @@ export class HamsterSettingTab extends PluginSettingTab {
 
     this.heading('Debug');
     new Setting(this.containerEl)
-      .setName('Show the Debug tab')
+      .setName('Show the debug tab')
       .setDesc(
         'A sidebar tab with every exchange with the model: what was sent and what came back. It holds your notes and transcript, is kept in memory only for the last 100 calls, and is gone when Obsidian closes. This computer only.',
       )

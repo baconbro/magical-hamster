@@ -221,15 +221,30 @@ export default class MagicalHamsterPlugin extends Plugin {
 
     this.addRibbonIcon('audio-lines', 'Open Magical Hamster', activate);
     this.addCommand({ id: 'open', name: 'Open sidebar', callback: activate });
+    /* Offered only with a note in front that can hold a meeting: the rule the sidebar's buttons
+       follow (NoteChoice). The session tracks that note itself: Obsidian's active view is the
+       sidebar while it has the focus. */
+    const noteInFront = (): boolean => {
+      const focused = session.store.getState().focusedNote;
+      return focused !== null && !focused.daily;
+    };
     this.addCommand({
       id: 'use-this-note',
       name: 'Use the open note for the meeting',
-      callback: () => void session.controller.useActiveNote(),
+      checkCallback: (checking) => {
+        if (!noteInFront()) return false;
+        if (!checking) void session.controller.useActiveNote();
+        return true;
+      },
     });
     this.addCommand({
       id: 'write-meeting-into-note',
       name: 'Write the meeting into the open note',
-      callback: () => void session.controller.writeIntoActiveNote(),
+      checkCallback: (checking) => {
+        if (!noteInFront()) return false;
+        if (!checking) void session.controller.writeIntoActiveNote();
+        return true;
+      },
     });
     this.addCommand({
       id: 'toggle-debug-tab',

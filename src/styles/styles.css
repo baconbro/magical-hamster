@@ -18,6 +18,9 @@
  * element itself, which carries none.
  * ------------------------------------------------------------------------ */
 
+/* stylelint-disable at-rule-no-unknown -- @tailwind, @source, @custom-variant and @theme are
+   Tailwind's own directives, compiled away by the build: the released styles.css has none. */
+
 @import "tailwindcss/theme.css";
 @import "./reset.css";
 @import "./theme.css";
@@ -35,6 +38,8 @@
    (bg-surface, text-muted...); the real values are set on `.mh-root` in
    theme.css, from the reader's Obsidian theme. */
 @theme {
+  /* Obsidian's own monospace font (the `font-mono` utility), not Tailwind's default stack. */
+  --font-mono: var(--font-monospace, SFMono-Regular, Menlo, monospace);
   --color-surface: #ffffff;
   --color-surface-alt: #f6f6f6;
   --color-ink: #222222;
@@ -66,3 +71,7 @@
 @media (prefers-reduced-motion: reduce) {
   .mh-root .mh-pulse, .mh-root .mh-fade { animation: none; }
 }
+
+/* The first-write confirmation is Obsidian's own Modal, outside `.mh-root`: its root is `.mh-modal`. */
+.mh-modal .mh-confirm-row { margin-bottom: var(--size-4-3); }
+.mh-modal .mh-confirm-value { overflow-wrap: anywhere; user-select: text; }

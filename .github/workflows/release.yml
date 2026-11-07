@@ -9,6 +9,9 @@ on:
 
 permissions:
   contents: write
+  # Signed build provenance for the release files (artifact attestations).
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -32,6 +35,14 @@ jobs:
           fi
       - run: pnpm test
       - run: pnpm build
+      - name: Attest that the files were built from this repository
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/main.js
+            dist/manifest.json
+            dist/styles.css
+            dist/setup-speech.mjs
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

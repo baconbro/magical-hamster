@@ -20,6 +20,8 @@ class ConfirmWriteModal extends Modal {
 
   onOpen(): void {
     const { contentEl, preview } = this;
+    // The root the plugin's rules for this dialog are scoped to (styles.css).
+    this.modalEl.addClass('mh-modal');
     const text = confirmWriteText(preview);
     this.setTitle(text.title);
     contentEl.empty();
@@ -49,12 +51,9 @@ class ConfirmWriteModal extends Modal {
   }
 
   private row(label: string): HTMLElement {
-    const row = this.contentEl.createDiv();
-    row.setCssStyles({ marginBottom: 'var(--size-4-3)' });
+    const row = this.contentEl.createDiv({ cls: 'mh-confirm-row' });
     row.createDiv({ cls: 'setting-item-description', text: label });
-    const value = row.createDiv();
-    value.setCssStyles({ overflowWrap: 'anywhere', userSelect: 'text' });
-    return value;
+    return row.createDiv({ cls: 'mh-confirm-value' });
   }
 }
 

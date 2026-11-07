@@ -216,7 +216,7 @@ function LiveEnhanceSwitch() {
     <Switch
       checked={on}
       onChange={(next) => controller.setLiveEnhance(next)}
-      label="Live Enhance"
+      label="Live enhance"
       title="Enhance your notes as you type"
     />
   );

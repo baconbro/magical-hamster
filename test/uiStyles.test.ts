@@ -57,7 +57,9 @@ test('styles: the Tailwind utilities are generated inside the plugin root, never
 });
 
 test('styles: every rule of the plugin names its own root', () => {
-  const scoped = (selector: string): boolean => selector.includes('.mh-root') || selector.includes('.mh-view');
+  // The sidebar's roots, and the first-write dialog's (an Obsidian Modal, outside the sidebar).
+  const scoped = (selector: string): boolean =>
+    selector.includes('.mh-root') || selector.includes('.mh-view') || selector.includes('.mh-modal');
   const loose: string[] = [];
   const check = (css: string, file: string): void => {
     for (const rule of rulesOf(css)) {

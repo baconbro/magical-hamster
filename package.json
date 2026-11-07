@@ -1,7 +1,7 @@
 {
   "name": "magical-hamster",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Meeting assistant for Obsidian: live transcript, enhanced notes, summaries and Q&A, all on-device.",
   "type": "module",
   "scripts": {

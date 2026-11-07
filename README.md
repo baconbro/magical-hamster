@@ -98,7 +98,7 @@ What the model writes is drawn in the sidebar and saved to the companion as iner
 - **Microphone only.** With headphones it hears only you. Over speakers it hears everyone but cannot tell who is speaking.
 - No calendar import.
 - No audio is kept.
-- One generation model means one request at a time: an answer pauses Live Enhance for a few seconds.
+- One generation model means one request at a time: an answer pauses live enhance for a few seconds.
 
 A guided walkthrough is in [`docs/TUTORIAL.md`](docs/TUTORIAL.md).
 

@@ -9,7 +9,7 @@
 .mh-root {
   box-sizing: border-box;
   height: 100%;
-  font-family: var(--font-interface, ui-sans-serif, system-ui, -apple-system, sans-serif);
+  font-family: var(--font-interface, system-ui, -apple-system, sans-serif);
   font-size: var(--font-ui-small, 13px);
   line-height: 1.45;
   font-weight: 400;
@@ -73,7 +73,7 @@
 .mh-root :where(img, svg, video, canvas) { display: block; vertical-align: middle; }
 .mh-root :where(hr) { height: 0; color: inherit; border-top-width: 1px; }
 .mh-root :where(p, pre, blockquote, figure) { margin: 0; }
-.mh-root :where(pre, code, kbd, samp) { font-family: var(--font-monospace, ui-monospace, SFMono-Regular, Menlo, monospace); }
+.mh-root :where(pre, code, kbd, samp) { font-family: var(--font-monospace, SFMono-Regular, Menlo, monospace); }
 
 .mh-root ::-webkit-scrollbar { width: 9px; height: 9px; }
 .mh-root ::-webkit-scrollbar-track { background: transparent; }

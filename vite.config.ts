@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { builtinModules } from 'node:module'
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
@@ -6,6 +7,14 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 const at = (p: string) => fileURLToPath(new URL(p, import.meta.url))
+
+/* The licences of the packages bundled into main.js ask that their notices travel with every
+   copy, and a release ships main.js alone: the notices file goes at its top, as a comment the
+   minifier keeps. Added after minification (postBanner), from a committed file, so the build stays
+   the same for the same source. */
+const notices = readFileSync(at('./THIRD_PARTY_NOTICES.md'), 'utf8')
+if (notices.includes('*/')) throw new Error('THIRD_PARTY_NOTICES.md must not contain */: it is written inside a comment')
+const NOTICES_BANNER = `/*!\n${notices.trimEnd()}\n*/`
 
 /* The Obsidian plugin build: one CommonJS file, one stylesheet.
    Obsidian provides `obsidian`, `electron` and CodeMirror itself; Node built-ins
@@ -46,7 +55,7 @@ export default defineConfig(({ mode }) => ({
         /^node:/,
         ...builtinModules,
       ],
-      output: { assetFileNames: 'styles.css' },
+      output: { assetFileNames: 'styles.css', postBanner: NOTICES_BANNER },
     },
   },
 }))

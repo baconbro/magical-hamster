@@ -1,6 +1,6 @@
 # Third-party notices
 
-Magical Hamster is released under the MIT licence (see `LICENSE`). The plugin bundle that `pnpm build` writes, `dist/main.js`, also contains the open-source packages below, minified. Their licences ask that the copyright notice and the licence text travel with every copy: this file is that copy. Keep it next to `main.js` wherever the bundle goes: `pnpm install:plugin` copies it into the vault's plugin folder with the build.
+Magical Hamster is released under the MIT licence (see `LICENSE`). The plugin bundle that `pnpm build` writes, `dist/main.js`, also contains the open-source packages below, minified. Their licences ask that the copyright notice and the licence text travel with every copy: the build writes this whole file as a comment at the top of `main.js`, so every copy carries it.
 
 `dist/styles.css` is generated with Tailwind CSS (MIT) and keeps the notice Tailwind writes at its top.
 
@@ -185,11 +185,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## Downloaded by `pnpm setup:stt`, not bundled
+## Downloaded by the speech setup, not bundled
 
-The speech runtime is not part of the plugin bundle and is not in this repository. `pnpm setup:stt` downloads it onto the machine, into `~/Library/Application Support/magical-hamster/`, outside the vault:
+The speech runtime is not part of the plugin bundle and is not in this repository. The speech setup (`setup-speech.mjs`, attached to each release; `pnpm setup:stt` from the repository) downloads it onto the machine, into `~/Library/Application Support/magical-hamster/`, outside the vault, when the user runs it:
 
-- **sherpa-onnx-node** and its native addon **sherpa-onnx-darwin-arm64**, installed from npm. sherpa-onnx is published by the k2-fsa project under the Apache License 2.0: <https://github.com/k2-fsa/sherpa-onnx>. The licence files the packages ship are in the runtime directory, under `node_modules/`.
-- **The Nemotron 3.5 ASR streaming model**, downloaded from the `asr-models` release of <https://github.com/k2-fsa/sherpa-onnx/releases>. The model has its own licence terms, set by its publisher: they are in the model card and in the files distributed with the model, not in this repository.
+- **sherpa-onnx-node** and its native addon **sherpa-onnx-darwin-arm64**, installed from npm. sherpa-onnx is published by the k2-fsa project under the Apache License 2.0. The packages state it in their `package.json`; the licence text is at <https://github.com/k2-fsa/sherpa-onnx/blob/master/LICENSE>.
+- **ONNX Runtime**, inside sherpa-onnx-darwin-arm64 (`libonnxruntime.dylib`), by Microsoft under the MIT licence: <https://github.com/microsoft/onnxruntime/blob/main/LICENSE>.
+- **The Nemotron 3.5 ASR streaming model**, by NVIDIA, downloaded from the `asr-models` release of <https://github.com/k2-fsa/sherpa-onnx/releases>, under the OpenMDW-1.1 licence: <https://openmdw.ai/license/1-1/>, as its model card states (<https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b>). It places no restriction on the transcripts it produces.
 
 The generation and embedding models are pulled by the user with Ollama (`ollama pull`), and are covered by the licences shown on their Ollama pages.
