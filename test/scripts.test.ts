@@ -221,6 +221,55 @@ describe('install-plugin', () => {
   });
 });
 
+describe('release.mjs and plugin-manifest.mjs, the version files of a release', () => {
+  /** A copy of the three version files, as a release is prepared from them. */
+  function versionFiles(version = '0.1.4', minAppVersion = '1.13.0'): string {
+    const dir = scratchDir();
+    write(join(dir, 'package.json'), `${JSON.stringify({ name: 'x', version }, null, 2)}\n`);
+    write(join(dir, 'manifest.json'), `${JSON.stringify({ id: 'x', version, minAppVersion }, null, 2)}\n`);
+    write(join(dir, 'versions.json'), `${JSON.stringify({ [version]: minAppVersion }, null, 2)}\n`);
+    return dir;
+  }
+  const read = (dir: string, file: string): Record<string, unknown> =>
+    JSON.parse(readFileSync(join(dir, file), 'utf8')) as Record<string, unknown>;
+
+  it('release.mjs sets the next version in all three files and prints what to run', () => {
+    const dir = versionFiles();
+    const run = spawnSync(process.execPath, [script('release.mjs'), '0.2.0'], { encoding: 'utf8', cwd: dir });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(read(dir, 'package.json').version, '0.2.0');
+    assert.equal(read(dir, 'manifest.json').version, '0.2.0');
+    assert.deepEqual(read(dir, 'versions.json'), { '0.1.4': '1.13.0', '0.2.0': '1.13.0' });
+    assert.match(run.stdout, /git tag 0\.2\.0/);
+    assert.match(run.stdout, /git push && git push origin 0\.2\.0/);
+  });
+
+  it('release.mjs refuses a version that is not after the manifest, and a malformed one', () => {
+    for (const version of ['0.1.4', '0.1.3', '0.0.9']) {
+      const dir = versionFiles();
+      const run = spawnSync(process.execPath, [script('release.mjs'), version], { encoding: 'utf8', cwd: dir });
+      assert.equal(run.status, 1, version);
+      assert.match(run.stderr, /is not after 0\.1\.4/);
+      assert.equal(read(dir, 'manifest.json').version, '0.1.4', 'nothing written');
+    }
+    const malformed = spawnSync(process.execPath, [script('release.mjs'), 'v0.2.0'], { encoding: 'utf8', cwd: versionFiles() });
+    assert.equal(malformed.status, 1);
+    assert.match(malformed.stderr, /Usage/);
+  });
+
+  it('plugin-manifest.mjs copies the manifest into dist/ with the package version', () => {
+    const dir = versionFiles();
+    mkdirSync(join(dir, 'dist'));
+    // The build finishes package.json's version; a manifest left behind is brought up to it.
+    write(join(dir, 'package.json'), `${JSON.stringify({ name: 'x', version: '0.2.0' }, null, 2)}\n`);
+    const run = spawnSync(process.execPath, [script('plugin-manifest.mjs')], { encoding: 'utf8', cwd: dir });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(read(dir, 'dist/manifest.json').version, '0.2.0');
+    assert.equal(read(dir, 'manifest.json').version, '0.2.0', 'the source manifest follows');
+    assert.match(run.stdout, /v0\.2\.0/);
+  });
+});
+
 describe('bench-stt against a worker that dies', () => {
   /* A stand-in for the installed worker: it says it is ready, never reads its
      input (so the sender's pipe fills up), and ends the way a crash in native
