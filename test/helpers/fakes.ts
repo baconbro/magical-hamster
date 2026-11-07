@@ -168,6 +168,8 @@ export class FakeNotesHost implements NotesHost {
   /** Notes turned into their own meeting note. */
   readonly preparedNotes: string[] = [];
   readonly notices: string[] = [];
+  /** How long each notice asked to stay, in the order of `notices`; undefined for Obsidian's default. */
+  readonly noticeMs: Array<number | undefined> = [];
   readonly opened: string[] = [];
   readonly writes: Array<{ path: string; patches: Patch[]; outcome: WriteOutcome }> = [];
   readonly touched: Array<{ path: string; isoDate: string }> = [];
@@ -390,8 +392,9 @@ export class FakeNotesHost implements NotesHost {
     this.opened.push(path);
   }
 
-  notice(message: string): void {
+  notice(message: string, ms?: number): void {
     this.notices.push(message);
+    this.noticeMs.push(ms);
   }
 
   private sectionOptions(): SectionOptions & { linkPrefix: string } {

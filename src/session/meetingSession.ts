@@ -821,10 +821,10 @@ class MeetingSession implements HamsterSession {
     this.patch({ daily });
   }
 
-  private notice(message: string): void {
+  private notice(message: string, ms?: number): void {
     if (this.disposed) return;
     try {
-      this.deps.notes.notice(message);
+      this.deps.notes.notice(message, ms);
     } catch {
       // A host that cannot show a notice must not break the action that wanted one.
     }
@@ -1494,8 +1494,10 @@ class MeetingSession implements HamsterSession {
       }
     }
     this.discardAsked = { id, at: now };
+    // On screen for as long as the same request still answers it: Obsidian's own five seconds are shorter.
     this.notice(
       `This meeting is not saved yet. Create the companion note to keep it, or ${again} again to discard it.`,
+      DISCARD_MAX_MS,
     );
     return false;
   }

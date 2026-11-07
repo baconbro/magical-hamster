@@ -6258,6 +6258,18 @@ describe('a recorded meeting that is in no note yet', () => {
     assert.deepEqual([...env.world.notes.files.keys()].filter((path) => path.includes('Mtg-')), []);
   });
 
+  it('keeps its notice on screen for as long as the same request still discards', async () => {
+    const env = await recordedOnly();
+    env.c.selectSection(BOARD);
+    assert.match(env.world.notes.notices.at(-1) ?? '', NOT_SAVED);
+    assert.equal(env.world.notes.noticeMs.at(-1), 15_000, 'the fifteen seconds of the window');
+    // Any other notice keeps Obsidian's own duration.
+    await env.c.writeIntoActiveNote();
+    assert.match(env.world.notes.notices.at(-1) ?? '', /Open the note to write the meeting into first/);
+    assert.equal(env.world.notes.noticeMs.at(-1), undefined);
+    assert.equal(env.world.notes.noticeMs.length, env.world.notes.notices.length);
+  });
+
   it('is kept when the companion is created instead, and then left without a word', async () => {
     const env = await recordedOnly();
     env.c.selectSection(BOARD);

@@ -176,8 +176,8 @@ class HarnessNotes extends FakeNotesHost {
     this.onOpen(path);
   }
 
-  override notice(message: string): void {
-    super.notice(message);
+  override notice(message: string, ms?: number): void {
+    super.notice(message, ms);
     this.onNotice(message);
   }
 }
