@@ -30,7 +30,7 @@ jobs:
           # The whole history: the tag has to be on main.
           fetch-depth: 0
       - uses: pnpm/action-setup@v4 # v4
-      - uses: actions/setup-node@v5 # v5
+      - uses: actions/setup-node@v7 # v5
         with:
           node-version: 24
           cache: pnpm
