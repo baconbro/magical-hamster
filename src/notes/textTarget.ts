@@ -241,9 +241,18 @@ export class TextTarget {
     const wait = this.cooldown(file.path);
     if (wait > 0) return { status: 'retry', afterMs: wait };
 
+    // A TFile follows a rename: what Obsidian hands over may be the note under another path by now.
+    const asked = file.path;
     let outcome: WriteOutcome = { status: 'ok' };
     try {
       await this.app.vault.process(file, (data) => {
+        /* Renamed while the file was being read. The batch was for the note at `path`, and the
+           session, told of the rename, sends what it carried again under the new path: landed
+           here as well, every line would be in the note twice. */
+        if (normalizePath(file.path) !== normalizePath(asked)) {
+          outcome = { status: 'missing' };
+          return data;
+        }
         // Reading the file took a moment: someone may have started typing in it since.
         const late = this.holdFor(file);
         if (late > 0) {
@@ -335,9 +344,15 @@ export class TextTarget {
     const file = this.file(path);
     if (!file) return 'missing';
     if (this.holdFor(file) > 0) return 'busy';
-    let result: 'done' | 'busy' = 'done';
+    const asked = file.path;
+    let result: 'done' | 'busy' | 'missing' = 'done';
     try {
       await this.app.vault.process(file, (data) => {
+        // Renamed while the file was being read: not the note the caller decided about.
+        if (normalizePath(file.path) !== normalizePath(asked)) {
+          result = 'missing';
+          return data;
+        }
         if (this.holdFor(file) > 0) {
           result = 'busy';
           return data;
@@ -419,11 +434,16 @@ export class TextTarget {
     file: TFile,
     compute: (text: string) => LineInsertion | null,
   ): Promise<'vault' | 'skipped' | 'busy' | 'missing'> {
-    let result: 'vault' | 'skipped' | 'busy' = 'skipped';
+    let result: 'vault' | 'skipped' | 'busy' | 'missing' = 'skipped';
     // Obsidian reads the path the file has now; a rename meanwhile changes `file.path` under us.
     const path = file.path;
     try {
       await this.app.vault.process(file, (data) => {
+        // Renamed while the file was being read: `compute` decided about the note at `path`.
+        if (normalizePath(file.path) !== normalizePath(path)) {
+          result = 'missing';
+          return data;
+        }
         if (this.holdFor(file) > 0) {
           result = 'busy';
           return data;

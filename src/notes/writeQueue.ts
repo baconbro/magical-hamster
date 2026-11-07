@@ -23,6 +23,12 @@ const MIN_RETRY_MS = 50;
    client or caught in the middle of a rename is free a moment later. */
 const FAILED_RETRY_MS = 2000;
 const MAX_ATTEMPTS = 3;
+/**
+ * Within this long of its first try, a batch whose writes keep throwing has been given up
+ * (`onError`): the tries are FAILED_RETRY_MS apart, and the rest is room for the writes
+ * themselves. A caller that must hear the batch written or given up waits this long for it.
+ */
+export const GIVE_UP_MS = FAILED_RETRY_MS * MAX_ATTEMPTS;
 
 interface Waiter {
   /** The enqueue count this flush has to see written. */

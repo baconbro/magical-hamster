@@ -58,7 +58,7 @@ import { REGIONS, TRANSCRIPT_CALLOUT, parseCompanionProperties, readRegion, rend
 import { companionBasename, companionPath, dailyLinkLine } from '../notes/sanitize.ts';
 import { disarmCode, sanitizeLlmOutput } from '../notes/sanitizeLlmOutput.ts';
 import { transcriptPlain, turnLine } from '../notes/transcriptMd.ts';
-import { WriteQueue } from '../notes/writeQueue.ts';
+import { GIVE_UP_MS, WriteQueue } from '../notes/writeQueue.ts';
 import { createEmbedder } from '../rag/embed.ts';
 import { nearBest, retrievalFloors, type RetrievalFloors } from '../rag/relevance.ts';
 import { TranscriptIndex } from '../rag/transcriptIndex.ts';
@@ -82,6 +82,9 @@ const VAULT_CHANGE_DEBOUNCE_MS = 2000;
 /* Templater rewrites every new note about 300 ms after it is created. */
 const NEW_COMPANION_HOLD_MS = 1000;
 const FLUSH_CAP_MS = 3000;
+/* End waits for the queue to write its last batch or to give it up: given up once the meeting
+   is left, the lines it carried are in no memory any more, and nothing could send them again. */
+const END_FLUSH_CAP_MS = GIVE_UP_MS + 1000;
 /* Embedding the last chunk must not keep the Stop button spinning when Ollama is slow. */
 const INDEX_FLUSH_CAP_MS = 5000;
 /* An edited note is saved two seconds after the last keystroke: looked at once it has settled. */
@@ -627,6 +630,8 @@ class MeetingSession implements HamsterSession {
   private ending = 0;
   private missingNoticed = false;
   private writeErrorNoticed = false;
+  /** Notes a batch was given up for once their meeting had been left: each is named once. */
+  private readonly lostSaid = new Set<string>();
   /** The queue gave a batch up: the regions it carried are not in the note, and go again with the next try. */
   private resend = false;
   /** That next try, when nothing else brings one: armed when a batch is given up, one at a time. */
@@ -1916,7 +1921,9 @@ class MeetingSession implements HamsterSession {
       if (!this.mayLeave('end', 'press End')) return;
       // One more try for what a failed write dropped.
       this.sendDropped();
-      await this.writeQueue.flush();
+      // Long enough for a write that keeps throwing to be given up while the meeting is still
+      // here to hear it (onWriteError): after `leaveMeeting` its lines would be nowhere.
+      await this.writeQueue.flush(undefined, END_FLUSH_CAP_MS);
       if (this.closed || this.state.meeting?.key !== meeting.key || this.state.recording !== 'idle') return;
       this.leaveMeeting();
       this.patch({ ...this.clearedMeetingState(), meeting: null });
@@ -1960,6 +1967,8 @@ class MeetingSession implements HamsterSession {
     this.priorTranscript = false;
     this.separators = new Map();
     this.lastFinal.clear();
+    // What a source was still hearing belongs to this meeting or to none: not to the next one.
+    this.openPartial = null;
     this.savedTurns = 0;
     this.takenTurns = 0;
     this.writtenTurns = 0;
@@ -2782,7 +2791,18 @@ class MeetingSession implements HamsterSession {
 
   /** The queue gave a batch up after trying it three times. */
   private onWriteError(path: string, error: unknown): void {
-    if (this.disposed || this.state.meeting?.companionPath !== path) return;
+    if (this.disposed) return;
+    if (this.state.meeting?.companionPath !== path) {
+      /* The meeting was left while the queue was still trying: End waits for the third try, a
+         change of meeting cannot. The batch was in the queue's memory only, and what it carried
+         (the last lines, the latest notes) is now in none; the user is at least told which note
+         to look at. Once per note: the queue holds one batch per path, and nothing sends another
+         for a meeting that is not the current one. */
+      if (this.lostSaid.has(path)) return;
+      this.lostSaid.add(path);
+      this.notice(`The last lines could not be saved to ${basenameOf(path)}.`);
+      return;
+    }
     const lost = this.failedBatch;
     this.failedBatch = null;
     if (lost && lost.epoch === this.companionEpoch) {
@@ -3153,6 +3173,14 @@ class MeetingSession implements HamsterSession {
         // The recording is over either way.
       }
     }
+    /* A worker killed at the end of its grace sends no final for the sentence it was hearing:
+       up to twenty seconds, on screen as a partial. It is kept as said, in this meeting. Left
+       open, it would surface in the next one, as a final with this meeting's times. */
+    const open = this.openPartial;
+    if (open) {
+      this.openPartial = null;
+      this.onSttEvent({ ...open, isFinal: true });
+    }
     // Only now: the worker's last finals arrive during the stop.
     this.detachSource();
     await this.capped(this.transcriptIndex.flush(), INDEX_FLUSH_CAP_MS);
@@ -3222,6 +3250,9 @@ class MeetingSession implements HamsterSession {
     }
     this.unsubscribe = [];
     this.source = null;
+    // Nothing more will end it: a partial that outlived its source would be promoted into a
+    // final of the next recording, by a worker that dies before its first word.
+    this.openPartial = null;
   }
 
   private stopTicker(): void {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { WriteQueue } from '../src/notes/writeQueue.ts';
+import { GIVE_UP_MS, WriteQueue } from '../src/notes/writeQueue.ts';
 import type { WriteQueueDeps, WriteQueueOptions } from '../src/notes/writeQueue.ts';
 import type { Clock, Patch, WriteOutcome } from '../src/types.ts';
 
@@ -923,6 +923,25 @@ describe('WriteQueue: flush', () => {
     await h.clock.advance(4000);
     assert.equal(await isDone(second), true);
     assert.equal(h.errors.length, 2);
+  });
+
+  it('has given a batch whose writes keep throwing up within GIVE_UP_MS of its first try', async () => {
+    const h = harness();
+    h.answers.push(new Error('one'), new Error('two'), new Error('three'));
+    h.queue.enqueue(A, enhanced('x'));
+    // A caller that waits that long hears the batch given up, and is released with it.
+    const flushed = h.queue.flush(A, GIVE_UP_MS);
+    await h.clock.advance(GIVE_UP_MS);
+    assert.deepEqual(
+      h.calls.map((call) => call.at),
+      [0, 2000, 4000],
+      'the third try, the one that gives the batch up, two seconds after the second',
+    );
+    assert.ok(h.calls[2].at <= GIVE_UP_MS);
+    assert.equal(h.errors.length, 1);
+    assert.equal(await isDone(flushed), true);
+    assert.equal(h.queue.pending(), 0);
+    assert.equal(h.clock.armed(), 0);
   });
 
   it('does not wait for what is enqueued after it was called', async () => {

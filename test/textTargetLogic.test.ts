@@ -142,10 +142,11 @@ class FakeVault {
   }
 
   async process(file: FakeFile, fn: (data: string) => string): Promise<string> {
-    // As Obsidian does: the path is taken when the call is made, and read a moment later.
-    const path = file.path;
+    // As Obsidian does: the call returns at once and the file is read a moment later. A TFile
+    // follows a rename, so a note renamed meanwhile is read, and written, under its new path.
     await settle();
     this.duringRead?.();
+    const path = file.path;
     const entry = this.files.get(path);
     if (!entry) throw new Error('ENOENT');
     const next = fn(entry.data);
@@ -2524,6 +2525,13 @@ describe('review: saving what went into an editor (the quit hook)', () => {
 });
 
 describe('review: a note renamed between the decision and the write', () => {
+  /*
+   * The fake vault hands `process` the text of the note wherever it is by the time it reads, as
+   * Obsidian does through the TFile. The text must then go nowhere: the caller decided about the
+   * note at the old path, and the session, told of the rename, sends region patches again under
+   * the new one. Landed here as well, each transcript line would be in the note twice.
+   */
+
   /** Moves the note as Obsidian does: the same file object under a new path. */
   function rename(h: Harness, from: string, to: string): void {
     const entry = h.vault.files.get(from);
@@ -2542,7 +2550,8 @@ describe('review: a note renamed between the decision and the write', () => {
 
     assert.deepEqual(outcome, { status: 'missing' });
     assert.deepEqual(h.vault.writes, []);
-    assert.equal(h.vault.text('30 Archive/Mtg-moved.md'), companionText());
+    assert.equal(h.vault.getFileByPath(COMPANION_PATH), null, 'nothing was created at the old path');
+    assert.equal(h.vault.text('30 Archive/Mtg-moved.md'), companionText(), 'the renamed note is as it was');
   });
 
   it('answers missing for the link line instead of failing, and writes it nowhere', async () => {
@@ -2552,6 +2561,7 @@ describe('review: a note renamed between the decision and the write', () => {
 
     assert.equal(await h.target.insertLine('daily.md', () => ({ afterLine: 0, text: 'added' })), 'missing');
     assert.deepEqual(h.vault.writes, []);
+    assert.equal(h.vault.getFileByPath('daily.md'), null);
     assert.equal(h.vault.text('yesterday.md'), 'first\nsecond');
   });
 
@@ -2560,6 +2570,18 @@ describe('review: a note renamed between the decision and the write', () => {
     h.vault.add('Mtg-a.md', companionText());
     h.vault.duringRead = () => rename(h, 'Mtg-a.md', 'Mtg-b.md');
     assert.equal(await h.target.rewrite('Mtg-a.md', (data) => `${data}x`), 'missing');
+    assert.deepEqual(h.vault.writes, []);
+    assert.equal(h.vault.getFileByPath('Mtg-a.md'), null);
     assert.equal(h.vault.text('Mtg-b.md'), companionText());
+  });
+
+  it('writes to the note under its new path when asked for it there', async () => {
+    const h = new Harness();
+    h.vault.add(COMPANION_PATH, companionText());
+    rename(h, COMPANION_PATH, '30 Archive/Mtg-moved.md');
+    const outcome = await h.target.writeRegions('30 Archive/Mtg-moved.md', [{ region: 'summary', content: 'A short summary.' }]);
+    assert.deepEqual(outcome, { status: 'ok' });
+    assert.deepEqual(h.vault.writes, ['30 Archive/Mtg-moved.md']);
+    assert.equal(readRegion(h.vault.text('30 Archive/Mtg-moved.md'), 'summary'), 'A short summary.\n');
   });
 });
