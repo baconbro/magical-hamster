@@ -31,7 +31,8 @@ const INDEX_FORMAT = 2;
 const SAVE_ID_HEX = /^[0-9a-f]{16}$/;
 
 function randomSaveId(): string {
-  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(VECTORS_HEADER_BYTES / 2));
+  // The Web Crypto global: Obsidian's window has it, and so has Node, where the tests run.
+  const bytes = crypto.getRandomValues(new Uint8Array(VECTORS_HEADER_BYTES / 2));
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 

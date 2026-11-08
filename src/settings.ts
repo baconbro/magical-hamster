@@ -240,8 +240,10 @@ export function parseSettings(raw: unknown): HamsterSettings {
     const value = stored[key];
     return typeof value === 'string' && (words as readonly string[]).includes(value) ? (value as T) : (d[key] as T);
   };
-  const flag = (key: keyof HamsterSettings): boolean =>
-    typeof stored[key] === 'boolean' ? (stored[key] as boolean) : (d[key] as boolean);
+  const flag = (key: keyof HamsterSettings): boolean => {
+    const value = stored[key];
+    return typeof value === 'boolean' ? value : (d[key] as boolean);
+  };
   const number = (key: RangedKey): number => {
     const value = stored[key];
     if (typeof value !== 'number' || !Number.isFinite(value)) return d[key];

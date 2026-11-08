@@ -4,6 +4,8 @@ What a user or a contributor could notice, newest first, in the form of [Keep a 
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-07
+
 ### Fixed
 
 - "Write the meeting into it" no longer writes the properties through the Vault while the note's editor holds unsaved changes: the pending save could drop them. An existing `date` in that note is replaced only when the day differs, and string `tags` are split like Obsidian does.
@@ -26,6 +28,7 @@ What a user or a contributor could notice, newest first, in the form of [Keep a 
 - The stylesheet no longer declares variables on `:root`.
 - The release workflow builds with a read-only token and publishes in a separate job.
 - The default runtime folder follows the platform on Windows and Linux.
+- Two findings of the directory's lint in the merged code: a type assertion that changed nothing, and a `globalThis` (the Web Crypto global is used directly).
 
 ### Added
 

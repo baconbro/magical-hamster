@@ -1,7 +1,7 @@
 {
   "id": "magical-hamster",
   "name": "Magical Hamster",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "minAppVersion": "1.13.0",
   "description": "Meeting assistant: live transcript, enhanced notes, summaries and Q&A grounded in your vault. Runs on your own computer with Ollama; speech recognition on Apple silicon.",
   "author": "Fred",
